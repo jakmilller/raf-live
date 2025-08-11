@@ -1,0 +1,5 @@
+geometry_msgs/Pose target_pose
+float64[] force_threshold
+---
+bool success
+string message

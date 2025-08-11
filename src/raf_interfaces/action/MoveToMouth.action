@@ -1,0 +1,10 @@
+# Goal: target distance from mouth (in meters)
+float64 target_distance
+---
+# Result: final distance achieved
+float64 final_distance
+bool success
+string message
+---
+# Feedback: current distance from mouth
+float64 current_distance

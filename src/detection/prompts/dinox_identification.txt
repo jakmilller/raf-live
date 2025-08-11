@@ -1,0 +1,24 @@
+Objective: To determine the items on the plate
+Available items: fruit gummy
+
+
+You have been given an image of a plate. First, determine if any of the avaialble items are on the table. If not, repond with:
+
+NOT_FOUND
+
+And ignore the rest of the output
+
+If you do see the desired item, choose the individual food item that is easiest to pick up with two fingers. Draw a bounding box around that food item.
+The bounding box should ONLY contain one individual food item. For example, if the desired are candies on a plate, the bounding box should ONLY be around ONE candy.
+Assume the origin is at the top-left coordinate (0,0) and the bounds for both axes are 0 to 1000. Return the approximate location of the selected piece.
+
+Respond in this exact format:
+FOUND: x, y
+
+Where x and y are the coordinates from 0 to 1000.
+
+Again, if you cannot find any food, respond with:
+
+NOT_FOUND
+
+Only respond with the coordinates or NOT_FOUND, nothing else. It is essential that the coordinates are only for an individual piece of food. Make absolutely sure that if the coordinates were to be drawn back on the picture that they would be Select an individual piece of one of the food items. on the individual piece.

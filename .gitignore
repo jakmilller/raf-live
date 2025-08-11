@@ -1,0 +1,9 @@
+.env
+build/
+install/
+log/
+pics/
+SAM2_streaming/
+src/kortex_controller/kortex_api/
+__pycache__/
+

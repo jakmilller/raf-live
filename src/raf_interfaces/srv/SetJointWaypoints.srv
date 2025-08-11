@@ -1,0 +1,4 @@
+trajectory_msgs/JointTrajectory target_waypoints
+float64 timeout
+---
+bool success

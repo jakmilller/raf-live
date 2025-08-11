@@ -1,0 +1,4 @@
+float64[] joint_angles # in radians
+---
+bool success
+string message

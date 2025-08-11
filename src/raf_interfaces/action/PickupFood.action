@@ -1,0 +1,10 @@
+# Goal: Start pickup food procedure
+bool start_pickup
+---
+# Result: Final distance achieved and success status
+float64 final_distance
+bool success
+string message
+---
+# Feedback: Current distance from finger midpoint to centroid
+float64 current_distance

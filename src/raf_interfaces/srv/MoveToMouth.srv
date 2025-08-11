@@ -1,0 +1,9 @@
+# Request
+float64 target_distance
+
+---
+
+# Response
+bool success
+float64 final_distance
+string message

@@ -1,0 +1,4 @@
+string detection_type  # "food" or "cup"
+---
+bool success
+string message

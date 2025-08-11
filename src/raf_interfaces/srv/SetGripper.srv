@@ -1,0 +1,4 @@
+float64 position # 0.0 (open) to 1.0 (closed)
+---
+bool success
+string message

@@ -1,0 +1,8 @@
+# SetTwist.srv
+# Request
+geometry_msgs/Twist twist
+float64 timeout  # Duration in seconds (0.0 means no timeout)
+---
+# Response
+bool success
+string message
