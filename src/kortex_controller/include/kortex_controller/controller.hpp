@@ -21,6 +21,7 @@
 #include "raf_interfaces/srv/set_pose.hpp"
 #include "raf_interfaces/srv/set_gripper.hpp"
 #include "raf_interfaces/srv/set_twist.hpp"
+#include "raf_interfaces/srv/get_pose.hpp"
 
 // Kortex API
 #include <KDetailedException.h>
@@ -72,6 +73,7 @@ private:
     rclcpp::Service<raf_interfaces::srv::SetPose>::SharedPtr mSetPoseService;
     rclcpp::Service<raf_interfaces::srv::SetGripper>::SharedPtr mSetGripperService;
     rclcpp::Service<raf_interfaces::srv::SetTwist>::SharedPtr mSetTwistService;
+    rclcpp::Service<raf_interfaces::srv::GetPose>::SharedPtr mGetPoseService;
     
     // ROS2 timer
     rclcpp::TimerBase::SharedPtr mRobotStateTimer;
@@ -89,6 +91,8 @@ private:
                    std::shared_ptr<raf_interfaces::srv::SetGripper::Response> response);
     void setTwist(const std::shared_ptr<raf_interfaces::srv::SetTwist::Request> request,
                  std::shared_ptr<raf_interfaces::srv::SetTwist::Response> response);
+    void getPose(const std::shared_ptr<raf_interfaces::srv::GetPose::Request> request,
+                 std::shared_ptr<raf_interfaces::srv::GetPose::Response> response);
     
     // Subscriber callbacks
     void tareFTSensorCallback(const std_msgs::msg::Bool::SharedPtr msg);

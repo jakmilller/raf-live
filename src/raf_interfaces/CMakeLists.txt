@@ -29,6 +29,8 @@ set(srv_files
   "srv/SetTwist.srv"
   "srv/ProcessImage.srv"
   "srv/MoveToMouth.srv"
+  "srv/StartFaceServoing.srv"
+  "srv/GetPose.srv"
 )
 
 set(action_files

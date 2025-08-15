@@ -1,0 +1,7 @@
+# GetPose.srv - Service definition for getting current end effector pose
+# Request (empty - no parameters needed)
+---
+# Response
+geometry_msgs/Pose current_pose
+bool success
+string message

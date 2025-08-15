@@ -1,0 +1,8 @@
+# Request parameters for face servoing
+float64 gain_planar      # Gain for side to sidemovements
+float64 gain_depth       # Gain for z movement  
+float64 target_distance  # Minimum distance to stop at (meters)
+---
+# Response
+bool success
+string message

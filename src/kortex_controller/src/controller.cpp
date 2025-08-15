@@ -137,6 +137,8 @@ Controller::Controller() : Node("controller")
         "/my_gen3/set_gripper", std::bind(&Controller::setGripper, this, _1, _2));
     mSetTwistService = this->create_service<raf_interfaces::srv::SetTwist>(
         "/my_gen3/set_twist", std::bind(&Controller::setTwist, this, _1, _2));
+    mGetPoseService = this->create_service<raf_interfaces::srv::GetPose>(
+        "/my_gen3/get_pose", std::bind(&Controller::getPose, this, _1, _2));
     RCLCPP_INFO(this->get_logger(), "Services created");
 
     // Initialize force/torque sensor variables
@@ -782,6 +784,36 @@ void Controller::setTwist(const std::shared_ptr<raf_interfaces::srv::SetTwist::R
         response->success = false;
         response->message = "Failed to execute twist command due to an unknown error.";
         return;
+    }
+}
+
+void Controller::getPose(const std::shared_ptr<raf_interfaces::srv::GetPose::Request> request,
+                         std::shared_ptr<raf_interfaces::srv::GetPose::Response> response)
+{
+    RCLCPP_INFO(this->get_logger(), "Received get pose request");
+
+    try
+    {
+        auto feedback = mBaseCyclic->RefreshFeedback();
+        
+        response->current_pose.position.x = feedback.base().tool_pose_x();
+        response->current_pose.position.y = feedback.base().tool_pose_y();
+        response->current_pose.position.z = feedback.base().tool_pose_z();
+
+        tf2::Quaternion quat;
+        quat.setRPY(degreesToRadians(feedback.base().tool_pose_theta_x()), 
+                    degreesToRadians(feedback.base().tool_pose_theta_y()), 
+                    degreesToRadians(feedback.base().tool_pose_theta_z()));
+        response->current_pose.orientation = tf2::toMsg(quat);
+
+        response->success = true;
+        response->message = "Pose retrieved successfully";
+    }
+    catch (k_api::KDetailedException& ex)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Kortex exception: %s", ex.what());
+        response->success = false;
+        response->message = "Failed to get pose";
     }
 }
 

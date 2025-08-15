@@ -29,9 +29,12 @@ import random
 from sklearn.neighbors import NearestNeighbors
 import math
 
-class FoodDetectionNode(Node):
+# Import the service interface (reuse the same one)
+from raf_interfaces.srv import StartFaceServoing
+
+class FoodDetectionServiceNode(Node):
     def __init__(self):
-        super().__init__('food_detection_node')
+        super().__init__('food_detection_service_node')
         
         # Load environment variables
         load_dotenv(os.path.expanduser('~/raf-live/.env'))
@@ -50,7 +53,7 @@ class FoodDetectionNode(Node):
         # Initialize models based on config
         if self.detection_model == 'dinox':
             self.setup_dinox()
-            self.model = None  # Don't initialize Gemini if using DINOX
+            self.model = None
         else:
             self.model = genai.GenerativeModel('gemini-2.5-pro')
 
@@ -77,9 +80,14 @@ class FoodDetectionNode(Node):
         self.latest_depth_image = None
         self.camera_info = None
         
+        # Service state
+        self.service_active = False
+        self.current_gains = Vector3()
+        self.current_min_distance = 0.015  # Default 1.5cm
+        
         # Tracking state
         self.tracking_active = False
-        self.detection_requested = False
+        self.tracking_initialized = False
         
         # Detection and grasp state
         self.single_bite = True
@@ -94,28 +102,19 @@ class FoodDetectionNode(Node):
         self.camera_info_sub = self.create_subscription(
             CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
         
-        # Control subscribers
-        self.start_detection_sub = self.create_subscription(
-            Bool, '/start_food_detection', self.start_detection_callback, 10)
-        self.stop_detection_sub = self.create_subscription(
-            Bool, '/stop_food_detection', self.stop_detection_callback, 10)
-        self.voice_command_sub = self.create_subscription(
-            String, '/voice_food_command', self.voice_command_callback, 10)
-        
-        # from the visual servoing
+        # Subscribe to finished servoing signal
         self.finished_servoing_sub = self.create_subscription(
             Bool, '/finished_servoing', self.finished_servoing_callback, 10)
         
         # Publishers
         self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 10)
-        self.detection_complete_pub = self.create_publisher(Bool, '/food_detection_complete', 10)
         self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 10)
-        
-        # Add grip value publisher
         self.grip_val_pub = self.create_publisher(Float64, '/grip_value', 10)
-        
-        # Add segmentation visualization publisher
         self.segmented_image_pub = self.create_publisher(CompressedImage, '/segmented_image', 10)
+        
+        # Publishers for servoing node configuration
+        self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 10)
+        self.min_distance_pub = self.create_publisher(Float64, '/min_distance', 10)
         
         # RViz marker publishers
         self.target_point_pub = self.create_publisher(Marker, '/target_point', 10)
@@ -123,7 +122,7 @@ class FoodDetectionNode(Node):
         self.vis_vector_pub = self.create_publisher(MarkerArray, '/vis_vector', 10)
         
         # Processing timer
-        self.timer = self.create_timer(0.1, self.process_frame)
+        self.timer = None
         
         # State
         self.current_food_target = None
@@ -135,7 +134,14 @@ class FoodDetectionNode(Node):
         self.dinox_save_dir = os.path.expanduser('~/raf-live/pics/dinox_detection')
         os.makedirs(self.dinox_save_dir, exist_ok=True)
         
-        self.get_logger().info('Food Detection Node initialized')
+        # Create the service
+        self.food_servoing_service = self.create_service(
+            StartFaceServoing,  # Reusing the same service interface
+            'start_food_servoing', 
+            self.start_food_servoing_callback
+        )
+        
+        self.get_logger().info('Food Detection Service Node initialized')
     
     def setup_dinox(self):
         """Initialize DINOX client"""
@@ -177,30 +183,55 @@ class FoodDetectionNode(Node):
             self.cx = msg.k[2]
             self.cy = msg.k[5]
     
-    def start_detection_callback(self, msg):
-        if msg.data:
-            self.get_logger().info('Starting food detection...')
-            self.detection_requested = True
-            self.tracking_active = False
-            self.tracking_initialized = False
-    
-    def stop_detection_callback(self, msg):
-        if msg.data:
-            self.get_logger().info('Stopping food detection')
-            self.detection_requested = False
-            self.tracking_active = False
-            self.tracking_initialized = False
-            # Publish zero vector
-            self.publish_zero_vector()
-    
-    def voice_command_callback(self, msg):
-        """Handle voice commands for specific food items"""
-        self.current_food_target = msg.data
-        self.get_logger().info(f'Voice command received: {self.current_food_target}')
-
     def finished_servoing_callback(self, msg):
-        """Handle finished servoing signal"""
-        self.finished_servoing = msg.data
+        """Handle finished servoing signal to end service"""
+        if msg.data and self.service_active:
+            self.get_logger().info('Received finished servoing signal - ending food detection service')
+            self.service_active = False
+            self.tracking_active = False
+            self.tracking_initialized = False
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            # Publish final zero vector to ensure servoing stops
+            self.publish_zero_vector()
+
+    def start_food_servoing_callback(self, request, response):
+        """Service callback to start food servoing"""
+        self.get_logger().info('Food servoing service called')
+        
+        if self.service_active:
+            response.success = False
+            response.message = "Food servoing already active"
+            return response
+        
+        # Store service parameters
+        self.current_gains.x = request.gain_planar
+        self.current_gains.y = request.gain_planar  # Same for both x and y
+        self.current_gains.z = request.gain_depth
+        self.current_min_distance = request.target_distance
+        
+        # Publish gains and min distance to servoing node
+        self.twist_gains_pub.publish(self.current_gains)
+        self.min_distance_pub.publish(Float64(data=self.current_min_distance))
+        
+        # Reset tracking state
+        self.tracking_active = False
+        self.tracking_initialized = False
+        
+        # Activate service
+        self.service_active = True
+        
+        # Start processing timer
+        if self.timer:
+            self.timer.cancel()
+        self.timer = self.create_timer(0.1, self.process_frame)
+        
+        self.get_logger().info(f'Started food servoing with gains: planar={request.gain_planar}, depth={request.gain_depth}, target_distance={request.target_distance}')
+        
+        response.success = True
+        response.message = "Food servoing started successfully"
+        return response
 
     def publish_zero_vector(self):
         """Publish zero position vector"""
@@ -573,7 +604,7 @@ class FoodDetectionNode(Node):
             self.get_logger().error("boxPoints returned invalid data")
             return None, None, None, None, None
 
-        box = np.int0(box)
+        box = np.intp(box)
 
         try:
             if np.linalg.norm(box[0]-box[1]) < np.linalg.norm(box[1]-box[2]):
@@ -636,32 +667,32 @@ class FoodDetectionNode(Node):
             rs_width_p2, success2 = self.pixel_to_rs_frame(width_p2[0], width_p2[1], depth_image)
 
             if not success1 or not success2 or rs_width_p1 is None or rs_width_p2 is None:
-                self.get_logger().error("Could not convert width points to RealSense coordinates")
-                return None, None, None, None, None
-
-            # get true distances of points from each other (ignore depth for accuracy)
-            rs_width_p1_2d = rs_width_p1[:2]
-            rs_width_p2_2d = rs_width_p2[:2]
-
-            # Calculate the Euclidean distance between points
-            width = np.linalg.norm(rs_width_p1_2d - rs_width_p2_2d)
-            self.get_logger().info(f"Width of food item={width:.3f} m")
-            width_mm = width*1000
-
-            # cubic regression function mapping gripper width to grip value
-            grip_val = -0.0000246123*width_mm**3 + 0.00342851*width_mm**2 -0.667919*width_mm +80.44066
-
-            # the grip value will move the gripper to the exact width of the food, but you'll want the insurance if it being a little wider so it grasps successfully
-            grip_val = grip_val-4
-
-            # make sure it doesn't break fingers
-            if grip_val > 80:
-                grip_val = 80
-            elif grip_val < 0:
-                grip_val = 0
-
-            grip_val = round(grip_val)/100
-            self.get_logger().info(f"Grip value={grip_val}")
+                self.get_logger().warn("Could not convert width points to RealSense coordinates")
+                grip_val = None
+            else: 
+                # get true distances of points from each other (ignore depth for accuracy)
+                rs_width_p1_2d = rs_width_p1[:2]
+                rs_width_p2_2d = rs_width_p2[:2]
+    
+                # Calculate the Euclidean distance between points
+                width = np.linalg.norm(rs_width_p1_2d - rs_width_p2_2d)
+                self.get_logger().info(f"Width of food item={width:.3f} m")
+                width_mm = width*1000
+    
+                # cubic regression function mapping gripper width to grip value
+                grip_val = -0.0000246123*width_mm**3 + 0.00342851*width_mm**2 -0.667919*width_mm +80.44066
+    
+                # the grip value will move the gripper to the exact width of the food, but you'll want the insurance if it being a little wider so it grasps successfully
+                grip_val = grip_val-4
+    
+                # make sure it doesn't break fingers
+                if grip_val > 80:
+                    grip_val = 80
+                elif grip_val < 0:
+                    grip_val = 0
+    
+                grip_val = round(grip_val)/100
+                self.get_logger().info(f"Grip value={grip_val}")
 
             food_angle = self.get_food_angle_pca(mask)
 
@@ -672,32 +703,6 @@ class FoodDetectionNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error in get_food_width: {str(e)}")
             return None, None, None, None, None
-    
-    # def get_food_angle(self, centroid, end):
-    #     """Calculate food angle exactly like perception node"""
-    #     center_y = centroid[1]
-    #     end_y = end[1]
-
-    #     if center_y<end_y:
-    #         p2 = centroid
-    #         p1 = end
-    #     else:
-    #         p1 = centroid
-    #         p2 = end
-
-    #     a = abs(p2[0]-p1[0])
-    #     b = abs(p2[1]-p1[1])
-    #     if b == 0:
-    #         b=0.001
-
-    #     food_angle = math.degrees(math.atan(a/b))
-
-    #     if p1[0]>p2[0]:
-    #         food_angle = -food_angle
-
-    #     print(f"Food angle={food_angle:.2f} degrees")
-
-    #     return food_angle
 
     def get_food_angle_pca(self, mask):
         ys, xs = np.where(mask > 0)
@@ -718,12 +723,6 @@ class FoodDetectionNode(Node):
         major_axis = eigvecs[:, np.argmax(eigvals)]
 
         angle = np.degrees(np.arctan2(major_axis[1], major_axis[0]))
-
-        # Wrap angle to [-90, 90]
-        # if angle > 90:
-        #     angle -= 180
-        # elif angle < -90:
-        #     angle += 180
 
         # wrap angle to correct range for servoing
         if -180 <= angle <= -45:
@@ -785,18 +784,6 @@ class FoodDetectionNode(Node):
             
             # Draw line connecting width points
             cv2.line(vis_image, tuple(width_p1), tuple(width_p2), (255, 255, 0), 2)  # Cyan line
-
-        # Draw orientation line through center (or lower center for multibite)
-        # if food_angle is not None:
-        # # Choose center point
-            
-        #     length = 60  # Length of the line in pixels
-        #     angle_rad = np.deg2rad(food_angle)
-        #     dx = int(length * np.cos(angle_rad) / 2)
-        #     dy = int(length * np.sin(angle_rad) / 2)
-        #     pt1 = (centroid[0] - dx, centroid[1] - dy)
-        #     pt2 = (centroid[0] + dx, centroid[1] + dy)
-        #     cv2.line(vis_image, pt1, pt2, (255, 0, 0), 3)
             
         # Add text information
         info_text = [
@@ -844,9 +831,6 @@ class FoodDetectionNode(Node):
                 grip_msg.data = grip_val
                 self.grip_val_pub.publish(grip_msg)
                 self.grip_value = grip_val
-            
-            # if centroid is None:
-            #     centroid = self.get_mask_centroid(mask_2d)
                 
             if centroid is None:
                 self.get_logger().warn("No centroid found")
@@ -855,8 +839,6 @@ class FoodDetectionNode(Node):
             
             # Create visualization with grasp points
             vis_image = self.draw_grasp_visualization(frame, centroid, width_p1, width_p2, food_angle, 1.0)
-
-            
             
             # Apply mask overlay like in perception node
             height, width = frame.shape[:2]
@@ -964,11 +946,11 @@ class FoodDetectionNode(Node):
             vector.y = food_in_effector.point.y - finger_midpoint.y
             vector.z = food_in_effector.point.z - finger_midpoint.z
             
-            # Check if we're close enough (within 1.5cm)
-            distance = np.linalg.norm([vector.x, vector.y, vector.z])
-            if distance < 0.015:
-                self.get_logger().info("Robot is within 1.5cm of target, stopping")
-                return Vector3(x=0.0, y=0.0, z=0.0)
+            # Check if we're close enough (within current min distance)
+            # distance = np.linalg.norm([vector.x, vector.y, vector.z])
+            # if distance < self.current_min_distance:
+            #     self.get_logger().info(f"Robot is within {self.current_min_distance}m of target, stopping")
+            #     return Vector3(x=0.0, y=0.0, z=0.0)
             
             return vector
             
@@ -1075,7 +1057,7 @@ class FoodDetectionNode(Node):
             
     def process_frame(self):
         """Main processing loop"""
-        if not self.detection_requested or self.latest_color_image is None:
+        if not self.service_active or self.latest_color_image is None:
             return
         
         try:
@@ -1099,7 +1081,7 @@ class FoodDetectionNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = FoodDetectionNode()
+    node = FoodDetectionServiceNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
