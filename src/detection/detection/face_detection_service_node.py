@@ -20,8 +20,9 @@ from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# Import the service interface (you'll need to create this)
+# Import the service interface
 from raf_interfaces.srv import StartFaceServoing
+from tracking import CoordinateTransforms
 
 class FaceDetectionServiceNode(Node):
     def __init__(self):
@@ -40,6 +41,9 @@ class FaceDetectionServiceNode(Node):
         # TF2 for coordinate transformations
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
+        # Initialize coordinate transforms
+        self.coordinate_transforms = CoordinateTransforms(self)
         
         # Camera parameters
         self.fx = 615.0  # Default values, will be updated
@@ -90,7 +94,7 @@ class FaceDetectionServiceNode(Node):
         self.finished_servoing_sub = self.create_subscription(
             Bool, '/finished_servoing', self.finished_servoing_callback, 10)
         
-        # Publisher for position vector (same as original node)
+        # Publisher for position vector
         self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 10)
         
         # Publishers for servoing node configuration
@@ -193,28 +197,7 @@ class FaceDetectionServiceNode(Node):
 
     def get_finger_midpoint_in_end_effector_frame(self):
         """Get the finger midpoint position in the end effector frame"""
-        try:
-            # Get finger pad positions in the end-effector frame
-            right_finger_transform = self.tf_buffer.lookup_transform(
-                'end_effector_link', 'right_inner_finger_pad', rclpy.time.Time())
-            left_finger_transform = self.tf_buffer.lookup_transform(
-                'end_effector_link', 'left_inner_finger_pad', rclpy.time.Time())
-                
-            # Calculate midpoint of finger pads in the end-effector frame
-            right_pos = right_finger_transform.transform.translation
-            left_pos = left_finger_transform.transform.translation
-            finger_midpoint = Point()
-            finger_midpoint.x = (right_pos.x + left_pos.x) / 2.0
-            finger_midpoint.y = (right_pos.y + left_pos.y) / 2.0
-            finger_midpoint.z = (right_pos.z + left_pos.z) / 2.0
-            # Add half the 2f 140 finger pad length to the z coordinate
-            finger_midpoint.z += 0.019  # Adjust based on your gripper's finger length
-            
-            return finger_midpoint
-            
-        except Exception as e:
-            self.get_logger().warn(f"Could not get finger midpoint: {e}", throttle_duration_sec=2.0)
-            return None
+        return self.coordinate_transforms.get_finger_midpoint_in_end_effector_frame()
 
     def transform_mouth_to_end_effector_frame(self, mouth_pixel_x, mouth_pixel_y, depth):
         """Transform mouth position from camera frame to end effector frame"""
@@ -240,6 +223,26 @@ class FaceDetectionServiceNode(Node):
             self.get_logger().warn(f"Could not transform mouth to end effector frame: {e}", throttle_duration_sec=2.0)
             return None
 
+    def calculate_mouth_position_vector(self, mouth_pixel_x, mouth_pixel_y, average_lip_depth):
+        """Calculate position vector from finger to mouth"""
+        # Transform mouth position to end effector frame
+        mouth_in_effector = self.transform_mouth_to_end_effector_frame(mouth_pixel_x, mouth_pixel_y, average_lip_depth)
+        if mouth_in_effector is None:
+            return None
+        
+        # Get finger midpoint
+        finger_midpoint = self.get_finger_midpoint_in_end_effector_frame()
+        if finger_midpoint is None:
+            return None
+        
+        # Calculate vector from finger to mouth
+        vector = Vector3()
+        vector.x = mouth_in_effector.x - finger_midpoint.x
+        vector.y = mouth_in_effector.y - finger_midpoint.y
+        vector.z = mouth_in_effector.z - finger_midpoint.z
+        
+        return vector
+
     def detect_mouth_and_publish_vector(self):
         """Detect mouth position and publish position vector"""
         if self.latest_color_image is None or self.latest_depth_image is None:
@@ -260,7 +263,7 @@ class FaceDetectionServiceNode(Node):
                 self.publish_zero_vector()
                 return
             
-            # Get mouth center from landmarks (same logic as original)
+            # Get mouth center from landmarks
             face_landmarks = detection_result.face_landmarks[0]
             upper_lip = face_landmarks[13]
             lower_lip = face_landmarks[14]
@@ -272,7 +275,7 @@ class FaceDetectionServiceNode(Node):
             center_x = int(mouth_center_x * image_width)
             center_y = int(mouth_center_y * image_height)
             
-            # Get all lip landmarks for depth averaging (same as original)
+            # Get all lip landmarks for depth averaging
             lip_indices = [13,312,311,310,318,402,317,14,87,178,88,80,81,82,40,39,37,0,267,269,270,321,405,314,17,84,181,91]
             lip_points = [face_landmarks[i] for i in lip_indices]
             
@@ -293,23 +296,11 @@ class FaceDetectionServiceNode(Node):
                 self.publish_zero_vector()
                 return
             
-            # Transform mouth position to end effector frame
-            mouth_in_effector = self.transform_mouth_to_end_effector_frame(center_x, center_y, average_lip_depth)
-            if mouth_in_effector is None:
+            # Calculate position vector using the helper method
+            vector = self.calculate_mouth_position_vector(center_x, center_y, average_lip_depth)
+            if vector is None:
                 self.publish_zero_vector()
                 return
-            
-            # Get finger midpoint
-            finger_midpoint = self.get_finger_midpoint_in_end_effector_frame()
-            if finger_midpoint is None:
-                self.publish_zero_vector()
-                return
-            
-            # Calculate vector from finger to mouth
-            vector = Vector3()
-            vector.x = mouth_in_effector.x - finger_midpoint.x
-            vector.y = mouth_in_effector.y - finger_midpoint.y
-            vector.z = mouth_in_effector.z - finger_midpoint.z
             
             # Check if we're close enough (within target distance)
             distance = np.linalg.norm([vector.x, vector.y, vector.z])
