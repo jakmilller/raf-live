@@ -229,7 +229,7 @@ class MinimalOrchestrator(Node):
                 current_feedback = await self.get_current_pose()
                 if current_feedback:
                     pickup_pose = copy.deepcopy(current_feedback)
-                    pickup_pose.position.z -= 0.01  # Move down 1cm
+                    pickup_pose.position.z -= 0.013  # Move down 1cm
                     
                     if not await self.robot_controller.move_to_pose(pickup_pose):
                         self.get_logger().error("Failed to move down for pickup!")

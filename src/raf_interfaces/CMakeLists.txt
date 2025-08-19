@@ -36,6 +36,7 @@ set(srv_files
 set(action_files
   "action/MoveToMouth.action"
   "action/PickupFood.action"
+  "action/FoodServoing.action"
 )
 
 # Generate messages and services

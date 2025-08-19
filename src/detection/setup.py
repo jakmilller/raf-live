@@ -23,9 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'food_detection_node = detection.food_detection_node:main',
-            'face_detection_node = detection.face_detection_node:main',
-            'voice_handler_node = detection.voice_handler_node:main',
+            'food_detection_service_node = detection.food_detection_service_node:main',
+            'face_detection_service_node = detection.face_detection_service_node:main',
         ],
     },
 )

@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionServer
 from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from geometry_msgs.msg import Vector3
 from std_msgs.msg import Bool, String, Float64
@@ -29,15 +30,15 @@ import random
 from sklearn.neighbors import NearestNeighbors
 import math
 
-# Import the service interface (reuse the same one)
-from raf_interfaces.srv import StartFaceServoing
+# Import the action interface
+from raf_interfaces.action import FoodServoing
 from visualization import RVizVisualizer, ImageVisualizer
 from tracking import SAM2Tracker, GraspAnalyzer, CoordinateTransforms
 from detectors import GeminiDetector, DinoxDetector
 
-class FoodDetectionServiceNode(Node):
+class FoodDetectionActionNode(Node):
     def __init__(self):
-        super().__init__('food_detection_service_node')
+        super().__init__('food_detection_action_node')
         
         # Load environment variables
         load_dotenv(os.path.expanduser('~/raf-live/.env'))
@@ -66,7 +67,7 @@ class FoodDetectionServiceNode(Node):
             self.detector = GeminiDetector(
                 node=self,
                 prompt=self.prompt,
-                current_food_target=self.current_food_target
+                current_food_target=None
             )
 
         self.current_item = ""
@@ -86,15 +87,11 @@ class FoodDetectionServiceNode(Node):
         self.latest_depth_image = None
         self.camera_info = None
         
-        # Service state
-        self.service_active = False
-        self.current_gains = Vector3()
-        self.current_min_distance = 0.015  # Default 1.5cm
-        
-        # Tracking state
+        # Action and tracking state
+        self.goal_handle = None
+        self.action_active = False
+        self.action_result = None  # Store result here
         self.grasp_analyzer = GraspAnalyzer(self)
-        
-        # Detection and grasp state
         self.grip_value = None
         
         # Subscribers
@@ -126,9 +123,6 @@ class FoodDetectionServiceNode(Node):
         # Processing timer
         self.timer = None
         
-        # State
-        self.current_food_target = None
-        
         # Create save directories
         self.save_dir = os.path.expanduser('~/raf-live/pics/gemini_detection')
         os.makedirs(self.save_dir, exist_ok=True)
@@ -136,13 +130,15 @@ class FoodDetectionServiceNode(Node):
         self.dinox_save_dir = os.path.expanduser('~/raf-live/pics/dinox_detection')
         os.makedirs(self.dinox_save_dir, exist_ok=True)
         
-        # Create the service
-        self.food_servoing_service = self.create_service(
-            StartFaceServoing,  # Reusing the same service interface
-            'start_food_servoing', 
-            self.start_food_servoing_callback
+        # Create the action server
+        self._action_server = ActionServer(
+            self,
+            FoodServoing,
+            'food_servoing',
+            self.execute_callback
         )
-        self.get_logger().info('Food Detection Service Node initialized')
+        
+        self.get_logger().info('Food Detection Action Node initialized')
     
     def color_callback(self, msg):
         self.latest_color_image = msg
@@ -159,49 +155,120 @@ class FoodDetectionServiceNode(Node):
             self.cy = msg.k[5]
     
     def finished_servoing_callback(self, msg):
-        """Handle finished servoing signal to end service"""
-        if msg.data and self.service_active:
-            self.get_logger().info('Received finished servoing signal - ending food detection service')
-            self.service_active = False
+        """Handle finished servoing signal to end action"""
+        if msg.data and self.action_active and self.goal_handle:
+            self.get_logger().info('Received finished servoing signal - completing action')
+            self.action_active = False
             self.sam2_tracker.reset_tracking()
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
-            # Publish final zero vector to ensure servoing stops
             self.publish_zero_vector()
+            
+            # Store the result - it will be returned by execute_callback
+            self.action_result = FoodServoing.Result()
+            self.action_result.success = True
+            self.action_result.message = "Food servoing completed successfully"
+            self.action_result.detected_item = self.current_item
+            self.action_result.was_single_bite = self.single_bite
+            
+            # Reset state for next action
+            self.current_item = ""
+            self.single_bite = True
+            self.grip_value = None
 
-    def start_food_servoing_callback(self, request, response):
-        """Service callback to start food servoing"""
-        self.get_logger().info('Food servoing service called')
+    def execute_callback(self, goal_handle):
+        """Action execution callback"""
+        self.get_logger().info('Food servoing action started')
+        self.goal_handle = goal_handle
+        self.action_active = True
         
-        if self.service_active:
-            response.success = False
-            response.message = "Food servoing already active"
-            return response
+        # Reset state for new action
+        self.action_result = None
+        self.current_item = ""
+        self.single_bite = True
+        self.grip_value = None
         
-        # Store service parameters
-        self.current_gains.x = request.gain_planar
-        self.current_gains.y = request.gain_planar  # Same for both x and y
-        self.current_gains.z = request.gain_depth
-        self.current_min_distance = request.target_distance
-        
-        # Publish gains and min distance to servoing node
-        self.twist_gains_pub.publish(self.current_gains)
-        self.min_distance_pub.publish(Float64(data=self.current_min_distance))
-        
-        # Activate service
-        self.service_active = True
+        # Configure servoing parameters
+        gains = Vector3()
+        gains.x = goal_handle.request.gain_planar
+        gains.y = goal_handle.request.gain_planar
+        gains.z = goal_handle.request.gain_depth
+        self.twist_gains_pub.publish(gains)
+        self.min_distance_pub.publish(Float64(data=goal_handle.request.target_distance))
         
         # Start processing timer
         if self.timer:
             self.timer.cancel()
         self.timer = self.create_timer(0.1, self.process_frame)
         
-        self.get_logger().info(f'Started food servoing with gains: planar={request.gain_planar}, depth={request.gain_depth}, target_distance={request.target_distance}')
+        # Timeout mechanism (30 seconds max)
+        start_time = self.get_clock().now()
+        timeout_duration = rclpy.duration.Duration(seconds=30.0)
         
-        response.success = True
-        response.message = "Food servoing started successfully"
-        return response
+        # Keep action alive until finished_servoing_callback completes it
+        while self.action_active and rclpy.ok():
+            # Check for timeout
+            if (self.get_clock().now() - start_time) > timeout_duration:
+                self.get_logger().warn('Action timed out after 30 seconds')
+                self._cleanup_action()
+                result = FoodServoing.Result()
+                result.success = False
+                result.message = "Action timed out"
+                result.detected_item = self.current_item
+                result.was_single_bite = self.single_bite
+                return result
+            
+            # Check for cancellation
+            if goal_handle.is_cancel_requested:
+                self.get_logger().info('Action cancelled')
+                self._cleanup_action()
+                goal_handle.canceled()
+                result = FoodServoing.Result()
+                result.success = False
+                result.message = "Action cancelled"
+                result.detected_item = self.current_item
+                result.was_single_bite = self.single_bite
+                return result
+            
+            rclpy.spin_once(self, timeout_sec=0.1)
+        
+        # Return the stored result if action completed successfully
+        if self.action_result is not None:
+            result = self.action_result
+            self.action_result = None  # Reset for next action
+            self._cleanup_action()
+            return result
+        
+        # If we exit the loop without the action being completed by finished_servoing_callback
+        self._cleanup_action()
+        result = FoodServoing.Result()
+        result.success = False
+        result.message = "Action terminated unexpectedly"
+        result.detected_item = self.current_item
+        result.was_single_bite = self.single_bite
+        return result
+    
+    def _cleanup_action(self):
+        """Clean up action state"""
+        self.action_active = False
+        self.sam2_tracker.reset_tracking()
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        self.publish_zero_vector()
+        self.goal_handle = None
+
+    def publish_feedback(self, phase):
+        """Publish action feedback"""
+        if not self.goal_handle or not self.action_active:
+            return
+            
+        feedback = FoodServoing.Feedback()
+        feedback.current_phase = phase
+        feedback.detected_item = self.current_item
+        feedback.grip_value = self.grip_value if self.grip_value else 0.0
+        self.goal_handle.publish_feedback(feedback)
 
     def publish_zero_vector(self):
         """Publish zero position vector"""
@@ -255,12 +322,13 @@ class FoodDetectionServiceNode(Node):
                 self.publish_zero_vector()
                 return
 
-            # Publish grip value if available
+            # Update grip value and publish feedback
             if grasp_info['grip_value'] is not None:
                 grip_msg = Float64()
                 grip_msg.data = grasp_info['grip_value']
                 self.grip_val_pub.publish(grip_msg)
                 self.grip_value = grasp_info['grip_value']
+                self.publish_feedback("acquiring food")
 
             # Publish food angle
             if grasp_info['food_angle'] is not None:
@@ -300,13 +368,19 @@ class FoodDetectionServiceNode(Node):
             
     def process_frame(self):
         """Main processing loop"""
-        if not self.service_active or self.latest_color_image is None:
+        if not self.action_active or self.latest_color_image is None:
             return
         
         try:
             frame = self.bridge.imgmsg_to_cv2(self.latest_color_image, "bgr8")
             
             if not self.sam2_tracker.is_tracking_active():
+                # Detection phase
+                if self.detection_model == 'dinox':
+                    self.publish_feedback("identifying food")
+                else:
+                    self.publish_feedback("finding food item")
+                    
                 detection_result = self.detector.detect_food(frame)
                 if detection_result is not None:
                     # Save debug image
@@ -330,7 +404,7 @@ class FoodDetectionServiceNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = FoodDetectionServiceNode()
+    node = FoodDetectionActionNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

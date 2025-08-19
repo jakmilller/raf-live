@@ -18,6 +18,7 @@ class AutonomousChecker(Node):
         # Load autonomous config parameters
         self.check_pixel_x = config['feeding']['autonomous']['check_pixel_x']
         self.check_pixel_y = config['feeding']['autonomous']['check_pixel_y']
+        self.check_pixel_points = config['feeding']['autonomous'].get('check_pixel_points', [])
         self.consecutive_checks = config['feeding']['autonomous']['consecutive_checks']
         self.check_interval = config['feeding']['autonomous']['check_interval']
         
@@ -65,15 +66,19 @@ class AutonomousChecker(Node):
         Check if object is grasped based on depth at the fixed pickup pixel coordinates
         These coordinates represent where food appears when picked up by the gripper
         """
-        depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
+        depths = []
+        for point in self.check_pixel_points:
+            self.check_pixel_x, self.check_pixel_y = point
+            depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
+            self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            if depth is not None and depth > 0:
+                depths.append(depth)
         
-        if depth is None:
-            return False
+        final_depth = np.mean(depths) if depths else None
         
-        self.get_logger().info(f"Food depth: ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
         
         # Check if depth indicates object is picked up (within expected range for grasped food)
-        if depth<0.25 and depth>0.15:
+        if final_depth<0.25 and final_depth>0.15:
             return True
         else:
             return False
@@ -83,16 +88,18 @@ class AutonomousChecker(Node):
         Check if object has been removed/eaten from gripper
         If no object is detected at the pickup pixel, it's been removed
         """
-        depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
+        depths = []
+        for point in self.check_pixel_points:
+            self.check_pixel_x, self.check_pixel_y = point
+            depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
+            self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            if depth is not None and depth > 0:
+                depths.append(depth)
         
-        if depth is None:
-            self.get_logger().info("No valid depth found at pixel")
-            return False
-        
-        self.get_logger().info(f"Food depth:({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+        final_depth = np.mean(depths) if depths else None
         
         # If depth is outside the pickup range, object is likely removed
-        if depth > 0.2:
+        if final_depth > 0.20:
             return True
         else:
             return False

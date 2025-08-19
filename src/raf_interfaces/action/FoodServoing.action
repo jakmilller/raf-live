@@ -1,0 +1,15 @@
+# Goal
+float32 gain_planar
+float32 gain_depth  
+float32 target_distance
+---
+# Result
+bool success
+string message
+string detected_item
+bool was_single_bite
+---
+# Feedback
+string current_phase    # "identifying food", "finding food item", "acquiring food"
+string detected_item
+float32 grip_value

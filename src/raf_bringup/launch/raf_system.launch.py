@@ -1,4 +1,6 @@
 from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import (
     Command,
@@ -124,6 +126,25 @@ def generate_launch_description():
         output="screen",
     )
 
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'rgb_camera.color_profile': '848x480x30',
+            'depth_module.profile': '848x480x30',
+            'enable_color': 'true',
+            'enable_depth': 'true',
+            'enable_rgbd': 'true',
+            'enable_sync': 'true',
+            'align_depth.enable': 'true'
+        }.items()
+    )
+
     return LaunchDescription([
         robot_ip_arg,
         robot_type_arg,
@@ -134,4 +155,5 @@ def generate_launch_description():
         controller_node,
         # perception_node,
         rviz_node,  # remove for no rviz
+        realsense_launch
     ])

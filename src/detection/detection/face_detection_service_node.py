@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/mcrr-lab/deploy-env/bin/python3
 
 import rclpy
 from rclpy.node import Node
