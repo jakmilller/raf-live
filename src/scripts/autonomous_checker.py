@@ -78,7 +78,7 @@ class AutonomousChecker(Node):
         
         
         # Check if depth indicates object is picked up (within expected range for grasped food)
-        if final_depth<0.25 and final_depth>0.15:
+        if final_depth is not None and final_depth<0.25 and final_depth>0.15:
             return True
         else:
             return False

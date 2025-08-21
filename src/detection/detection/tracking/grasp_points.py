@@ -14,6 +14,8 @@ class GraspAnalyzer:
             node: ROS node instance for logging and camera info (optional)
         """
         self.node = node
+        self.food_height_calculated = False
+        self.current_food_height = 0.0
     
     def analyze_grasp(self, mask, depth_image, single_bite, current_item=""):
         """
@@ -32,6 +34,7 @@ class GraspAnalyzer:
                 - width_p2: Second width point coordinates  
                 - food_angle: Food angle in degrees
                 - centroid: Mask centroid coordinates
+                - food_height: Height of food above table (calculated once per cycle)
                 - success: Whether analysis was successful
         """
         result = {
@@ -40,6 +43,7 @@ class GraspAnalyzer:
             'width_p2': None,
             'food_angle': None,
             'centroid': None,
+            'food_height': None,
             'success': False
         }
         
@@ -50,12 +54,16 @@ class GraspAnalyzer:
             # Calculate food angle using PCA
             food_angle = self._get_food_angle_pca(mask)
             
+            # Calculate food height if not already done this cycle
+            food_height = self._calculate_food_height(mask, depth_image)
+            
             result.update({
                 'grip_value': grip_val,
                 'width_p1': width_p1,
                 'width_p2': width_p2,
                 'food_angle': food_angle,
-                'centroid': centroid,
+                'centroid': centroid, #slightly misleading for multi-bite, the centroid in this case is the point on the food the robot will grab
+                'food_height': food_height,
                 'success': True
             })
             
@@ -65,6 +73,72 @@ class GraspAnalyzer:
             if self.node:
                 self.node.get_logger().error(f"Error in grasp analysis: {str(e)}")
             return result
+    
+    def reset_food_height_calculation(self):
+        """Reset food height calculation for new feeding cycle"""
+        self.food_height_calculated = False
+        self.current_food_height = 0.0
+        if self.node:
+            self.node.get_logger().info("Reset food height calculation for new cycle")
+    
+    def _calculate_food_height(self, mask, depth_image):
+        """
+        Find the height of the food item 
+        
+        Args:
+            mask: Binary segmentation mask
+            depth_image: Depth image from camera
+            
+        Returns:
+            float: Food height in meters
+        """
+        if self.food_height_calculated:
+            return self.current_food_height
+            
+        try:
+            # Get config value for distance from camera to table
+            if not self.node or not hasattr(self.node, 'config'):
+                if self.node:
+                    self.node.get_logger().warn("No config available for food height calculation")
+                return 0.0
+                
+            dist_from_table = self.node.config['feeding']['dist_from_table']
+            
+            # Get mask pixels for depth averaging
+            object_pixels = mask == 255
+            mask_depths = depth_image[object_pixels]
+            mask_depths = mask_depths[mask_depths > 0]  # Filter out invalid depths
+            
+            if len(mask_depths) == 0:
+                if self.node:
+                    self.node.get_logger().warn("No valid depth values in food mask")
+                return 0.0
+            
+            # Calculate average depth to food surface (convert mm to m)
+            avg_depth_to_food = np.mean(mask_depths) / 1000.0
+            
+            # Food height = table depth - food surface depth
+            food_height = dist_from_table - avg_depth_to_food
+            
+            # Validate food height is reasonable (between 0 and 10cm)
+            if food_height < 0 or food_height > 0.10:
+                if self.node:
+                    self.node.get_logger().warn(f"Calculated food height {food_height:.4f}m seems unreasonable, using 0.01m default")
+                food_height = 0.01  # Default 1cm
+            
+            # Store calculated height
+            self.current_food_height = food_height
+            self.food_height_calculated = True
+            
+            if self.node:
+                self.node.get_logger().info(f"Calculated food height: {food_height:.4f}m (table depth: {dist_from_table:.3f}m, food depth: {avg_depth_to_food:.3f}m)")
+            
+            return food_height
+            
+        except Exception as e:
+            if self.node:
+                self.node.get_logger().error(f"Error calculating food height: {str(e)}")
+            return 0.0
     
     def _get_mask_centroid(self, mask):
         """Find the centroid of a binary mask"""
@@ -87,12 +161,12 @@ class GraspAnalyzer:
         if not contours:
             if self.node:
                 self.node.get_logger().error("No contours found in mask")
-            return None, None, None
+            return None, None, None, None
 
         if centroid is None:
             if self.node:
                 self.node.get_logger().error("Could not calculate centroid")
-            return None, None, None
+            return None, None, None, None
 
         largest_contour = max(contours, key=cv2.contourArea)
 
@@ -100,21 +174,21 @@ class GraspAnalyzer:
         if len(largest_contour) < 5:
             if self.node:
                 self.node.get_logger().error("Contour has insufficient points for minAreaRect")
-            return None, None, None
+            return None, None, None, None
 
         # get a rotated rectangle around the segmentation
         rect = cv2.minAreaRect(largest_contour)
         if rect is None:
             if self.node:
                 self.node.get_logger().error("minAreaRect returned None")
-            return None, None, None
+            return None, None, None, None
 
         # get the box points of the rectangle and convert to integers
         box = cv2.boxPoints(rect)
         if box is None or len(box) != 4:
             if self.node:
                 self.node.get_logger().error("boxPoints returned invalid data")
-            return None, None, None
+            return None, None, None, None
 
         box = np.intp(box)
 
@@ -176,8 +250,8 @@ class GraspAnalyzer:
             rs_width_p2, success2 = self._pixel_to_rs_frame(width_p2[0], width_p2[1], depth_image)
 
             if not success1 or not success2 or rs_width_p1 is None or rs_width_p2 is None:
-                if self.node:
-                    self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
+                # if self.node:
+                #     self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
                 grip_val = None
             else: 
                 # get true distances of points from each other (ignore depth for accuracy)

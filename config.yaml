@@ -27,12 +27,18 @@ feeding:
   
   # depth from overlook to table (m)
   #dist_from_table: 0.342 for lab
-  dist_from_table: 0.36
+  dist_from_table: 0.359
+  # how far the tips of gripper should be from food after servoing
+  dist_from_food: 0.02
   robotiq_offset: 0.0285
+  max_retries: 3  # Maximum number of retries for food pickup
+
 
   autonomous:
     check_pixel_x: 534  # Pixel x-coordinate for pickup detection
     check_pixel_y: 419 # Pixel y-coordinate for pickup detection
+
+    
     # pixels in the RS frame (848x480 res) for checking
     check_pixel_points:
     - [528,431]
