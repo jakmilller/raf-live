@@ -66,7 +66,7 @@ class FoodDetectionServiceNode(Node):
             self.detector = GeminiDetector(
                 node=self,
                 prompt=self.prompt,
-                current_food_target=self.current_food_target
+                current_food_target=None
             )
 
         self.current_item = ""
@@ -88,11 +88,10 @@ class FoodDetectionServiceNode(Node):
         self.latest_depth_image = None
         self.camera_info = None
         
-        # Service state
+        # Service state - SIMPLIFIED
         self.service_active = False
         self.current_gains = Vector3()
-        self.distance_from_target = 0.015  # Default 1.5cm. this is how far the tips of the gripper should be from the food item (in end effector z)
-        self.servoing_stopped = False  # Track if we've already stopped servoing
+        self.distance_from_target = 0.015  # Default 1.5cm
         
         # Tracking state
         self.grasp_analyzer = GraspAnalyzer(self)
@@ -112,20 +111,16 @@ class FoodDetectionServiceNode(Node):
         self.food_acquired_sub = self.create_subscription(
             Bool, '/food_acquired', self.food_acquired_callback, 10)
         
-        # Subscribe to servoing_on to detect when orchestrator re-enables servoing
-        self.servoing_on_sub = self.create_subscription(
-            Bool, '/servoing_on', self.servoing_on_callback, 10)
-        
         # Publishers
         self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 1)
         self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 10)
         self.grip_val_pub = self.create_publisher(Float64, '/grip_value', 10)
         self.segmented_image_pub = self.create_publisher(CompressedImage, '/segmented_image', 10)
+        self.detection_ready_pub = self.create_publisher(Bool, '/detection_ready', 1)
         
         # Publishers for servoing node configuration
         self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 10)
         self.min_distance_pub = self.create_publisher(Float64, '/min_distance', 10)
-        self.servoing_on_pub = self.create_publisher(Bool, '/servoing_on', 10)
         
         # RViz marker publishers
         self.rviz_viz = RVizVisualizer(self)
@@ -175,17 +170,8 @@ class FoodDetectionServiceNode(Node):
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
-            # Publish final zero vector and turn off servoing
+            # Publish final zero vector
             self.publish_zero_vector()
-            self.servoing_on_pub.publish(Bool(data=False))
-    
-    def servoing_on_callback(self, msg):
-        """Handle servoing_on signal from orchestrator (for retries)"""
-        if msg.data and self.service_active:
-            # Orchestrator is re-enabling servoing (retry attempt)
-            self.get_logger().info('Orchestrator re-enabled servoing - resetting servoing state for retry')
-            self.servoing_stopped = False  # Reset the flag so we can stop servoing again
-            # Don't republish servoing_on=True here to avoid conflict
 
     def start_food_servoing_callback(self, request, response):
         """Service callback to start food servoing"""
@@ -207,10 +193,8 @@ class FoodDetectionServiceNode(Node):
 
         self.grasp_analyzer.reset_food_height_calculation()
         
-        # Activate service and enable servoing
+        # Activate service
         self.service_active = True
-        self.servoing_stopped = False  # Reset the servoing stopped flag
-        self.servoing_on_pub.publish(Bool(data=True))
         
         # Start processing timer
         if self.timer:
@@ -255,6 +239,8 @@ class FoodDetectionServiceNode(Node):
         try:
             # Update tracking
             mask_2d, _ = self.sam2_tracker.update_tracking(frame)
+
+            self.detection_ready_pub.publish(Bool(data=True))
 
             if mask_2d is None:
                 self.publish_zero_vector()
@@ -304,26 +290,12 @@ class FoodDetectionServiceNode(Node):
 
             # Convert to position vector
             position_vector = self.calculate_position_vector(centroid[0], centroid[1], mask_2d, self.distance_from_target)
-            total_distance = np.linalg.norm([position_vector.x, position_vector.y, position_vector.z])
-            planar_distance = np.linalg.norm([position_vector.x, position_vector.y])
-            print(f"Planar distance: {planar_distance:.3f}, Z distance: {position_vector.z:.3f}")
-
-            if position_vector is not None and total_distance > 0.000:
-
-                if total_distance < 0.002 and not self.servoing_stopped:
-                    #self.get_logger().info(f"Reached ({position_vector.z:.3f}m above item, less than {self.distance_from_target}m), stopping servoing")
-                    # Send zero vector and disable servoing ONCE
-                    self.publish_zero_vector()
-                    self.servoing_on_pub.publish(Bool(data=False))
-                    self.servoing_stopped = True  # Mark that we've stopped servoing
-                elif not self.servoing_stopped:
-                    # Only publish normal position vector if we haven't stopped servoing yet
-                    self.position_vector_pub.publish(position_vector)
-                else:
-                    # Continue publishing position vectors even after servoing stopped (for monitoring)
-                    self.position_vector_pub.publish(position_vector)
+            
+            if position_vector is not None:
+                # Always publish position vector - let orchestrator control when to use it
+                self.position_vector_pub.publish(position_vector)
                 
-                # Publish RViz markers regardless of distance
+                # Publish RViz markers for visualization
                 self.rviz_viz.publish_markers(centroid[0], centroid[1], position_vector)
             else:
                 self.publish_zero_vector()
@@ -341,7 +313,7 @@ class FoodDetectionServiceNode(Node):
         return self.coordinate_transforms.calculate_position_vector_from_mask(pixel_x, pixel_y, segmentation_mask, distance)
             
     def process_frame(self):
-        """Main processing loop"""
+        """Main processing loop - simplified to just publish position vectors"""
         if not self.service_active or self.latest_color_image is None:
             return
         
@@ -349,6 +321,7 @@ class FoodDetectionServiceNode(Node):
             frame = self.bridge.imgmsg_to_cv2(self.latest_color_image, "bgr8")
             
             if not self.sam2_tracker.is_tracking_active():
+                # Detection phase
                 detection_result = self.detector.detect_food(frame)
                 if detection_result is not None:
                     # Save debug image
