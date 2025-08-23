@@ -325,17 +325,23 @@ class MinimalOrchestrator(Node):
                 self.get_logger().info("Successfully closed gripper more")
 
             # Move up
-            if pickup_pose:
-                up_pose = copy.deepcopy(pickup_pose)
-                up_pose.position.z += 0.1  # Move up 10cm
-                self.get_logger().info(f"Moving up 10cm from original z")
-                if not await self.robot_controller.move_to_pose(up_pose):
-                    self.get_logger().error("Failed to move up!")
-                    continue
-                else:
-                    self.get_logger().info("Successfully moved up after pickup")
-            else:
-                self.get_logger().error("Cannot move up - no reference pose available")
+            # if pickup_pose:
+            #     up_pose = copy.deepcopy(pickup_pose)
+            #     up_pose.position.z += 0.1  # Move up 10cm
+            #     self.get_logger().info(f"Moving up 10cm from original z")
+            #     if not await self.robot_controller.move_to_pose(up_pose):
+            #         self.get_logger().error("Failed to move up!")
+            #         continue
+            #     else:
+            #         self.get_logger().info("Successfully moved up after pickup")
+            # else:
+            #     self.get_logger().error("Cannot move up - no reference pose available")
+            #     continue
+
+            # instead of just moving up, move back to overlook so we dont lose the segmentation
+            self.get_logger().info("Moving back to overlook position after pickup...")
+            if not await self.robot_controller.reset():
+                self.get_logger().error("Failed to move back to overlook!")
                 continue
             
             # Check if food was picked up

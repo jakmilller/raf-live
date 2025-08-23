@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'food_detection_service_node = detection.food_detection_service_node:main',
             'face_detection_service_node = detection.face_detection_service_node:main',
+            'voice_node = detection.voice_node:main',
         ],
     },
 )

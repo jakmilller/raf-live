@@ -17,6 +17,13 @@ def generate_launch_description():
         output='screen'
     )
 
+    # voice node - direct path to source
+    voice_node = Node(
+        executable='/home/mcrr-lab/raf-live/src/detection/detection/voice_node.py',
+        name='voice_node',
+        output='screen'
+    )
+
     # servoing node
     servoing_node = Node(
         package='servoing',
@@ -28,5 +35,6 @@ def generate_launch_description():
     return LaunchDescription([
         food_detection_service_node,
         face_detection_service_node,
+        voice_node,
         servoing_node
     ])

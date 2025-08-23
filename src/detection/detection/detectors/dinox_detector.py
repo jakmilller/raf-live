@@ -7,13 +7,14 @@ import os
 import requests
 import numpy as np
 import random
+from collections import deque
 from dds_cloudapi_sdk import Config, Client
 from dds_cloudapi_sdk.tasks.v2_task import V2Task
 from .base_detector import BaseDetector
 
 
 class DinoxDetector(BaseDetector):
-    """DINOX + ChatGPT based food detection"""
+    """DINOX + ChatGPT based food detection with voice command support"""
     
     def __init__(self, node=None, dinox_api_key="", openai_api_key="", prompt=""):
         """
@@ -32,6 +33,9 @@ class DinoxDetector(BaseDetector):
         self.current_item = ""
         self.single_bite = True
         
+        # Voice command queue system
+        self.voice_command_queue = deque(maxlen=10)
+        
         # Setup DINOX client
         self._setup_dinox()
         
@@ -40,6 +44,23 @@ class DinoxDetector(BaseDetector):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.openai_api_key}"
         }
+        
+        # Subscribe to voice commands if node is provided
+        if self.node:
+            # Check if voice is enabled in config
+            voice_enabled = getattr(self.node, 'config', {}).get('feeding', {}).get('voice', False)
+            if voice_enabled:
+                self.voice_command_sub = self.node.create_subscription(
+                    self._get_string_msg_type(), '/voice_commands', 
+                    self.voice_command_callback, 10
+                )
+                if self.node:
+                    self.node.get_logger().info('Voice command subscription created')
+    
+    def _get_string_msg_type(self):
+        """Get String message type (helper for ROS import)"""
+        from std_msgs.msg import String
+        return String
     
     def _setup_dinox(self):
         """Initialize DINOX client"""
@@ -53,9 +74,36 @@ class DinoxDetector(BaseDetector):
                 self.node.get_logger().error(f'Failed to initialize DINOX: {e}')
             raise e
     
+    def voice_command_callback(self, msg):
+        """Add voice commands to the queue"""
+        # Split the commands up by comma
+        commands = [cmd.strip() for cmd in msg.data.split(',')]
+
+        for command in commands:
+            if command == 'clear':
+                self.voice_command_queue.clear()
+                if self.node:
+                    self.node.get_logger().info("Voice command queue cleared!")
+            else:
+                # Add to queue (deque automatically handles maxlen=10)
+                self.voice_command_queue.append(command)
+                if self.node:
+                    self.node.get_logger().info(f"Added voice command to queue: '{command}' "
+                                               f"(Queue size: {len(self.voice_command_queue)})")
+    
+    def get_voice_command(self):
+        """Get the next command from queue or return None if empty"""
+        if len(self.voice_command_queue) > 0:
+            command = self.voice_command_queue.popleft()
+            if self.node:
+                self.node.get_logger().info(f"Processing voice command: '{command}' "
+                                           f"(Remaining in queue: {len(self.voice_command_queue)})")
+            return command
+        return None
+    
     def detect_food(self, frame):
         """
-        Use ChatGPT + DINOX stack to detect food and return highest confidence bounding box
+        Use voice commands or ChatGPT + DINOX stack to detect food and return highest confidence bounding box
         
         Args:
             frame: Input image frame (BGR format)
@@ -69,32 +117,84 @@ class DinoxDetector(BaseDetector):
                 temp_path = tmpfile.name
             cv2.imwrite(temp_path, frame)
             
-            # Step 1: Identify food items with ChatGPT
-            if self.node:
-                self.node.get_logger().info("Identifying food items with ChatGPT...")
-            identified_objects = self._identify_with_chatgpt(frame)
+            # Step 1: Check for voice commands first
+            voice_command = self.get_voice_command()
             
-            if not identified_objects:
+            if voice_command:
+                # Use voice command
                 if self.node:
-                    self.node.get_logger().error("ChatGPT failed to identify food items")
-                os.remove(temp_path)
-                return None
+                    self.node.get_logger().info(f"Using voice command: '{voice_command}'")
+                
+                # Parse voice command for bite information
+                parts = voice_command.rsplit(' ', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    item_name = parts[0]
+                    bite_number = int(parts[1])
+                else:
+                    item_name = voice_command
+                    bite_number = 1  # Default to single bite
+                
+                # Set single/multi bite based on voice command
+                self.single_bite = bite_number <= 1
+                selected_item = item_name
+                
+            else:
+                # Fall back to ChatGPT identification
+                if self.node:
+                    self.node.get_logger().info("No voice commands in queue, using ChatGPT identification...")
+                
+                identified_objects = self._identify_with_chatgpt(frame)
+                if not identified_objects:
+                    if self.node:
+                        self.node.get_logger().error("ChatGPT failed to identify food items")
+                    os.remove(temp_path)
+                    return None
+                
+                if self.node:
+                    self.node.get_logger().info(f"ChatGPT identified: {identified_objects}")
+                
+                # Check for voice command interrupt after ChatGPT returns
+                interrupt_command = self.get_voice_command()
+                if interrupt_command:
+                    if self.node:
+                        self.node.get_logger().info(f"ChatGPT overwritten with voice command: '{interrupt_command}'")
+                    
+                    # Parse interrupt command
+                    parts = interrupt_command.rsplit(' ', 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        item_name = parts[0]
+                        bite_number = int(parts[1])
+                    else:
+                        item_name = interrupt_command
+                        bite_number = 1
+                    
+                    self.single_bite = bite_number <= 1
+                    selected_item = item_name
+                else:
+                    # Use ChatGPT result
+                    selected_item = random.choice(identified_objects)
+                    if self.node:
+                        self.node.get_logger().info(f"Randomly selected: {selected_item}")
+                    
+                    parts = selected_item.rsplit(' ', 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        item_name = parts[0]
+                        bite_number = int(parts[1])
+                    else:
+                        item_name = selected_item
+                        bite_number = 1
+                    
+                    # Handle single/multi bite capabilities
+                    self.single_bite = bite_number <= 1
+                    selected_item = item_name
             
-            if self.node:
-                self.node.get_logger().info(f"ChatGPT identified: {identified_objects}")
-            
-            # Step 2: Randomly select one item
-            selected_item = random.choice(identified_objects)
-            if self.node:
-                self.node.get_logger().info(f"Randomly selected: {selected_item}")
-            
-            # Parse bite information
+            # Parse item information
             self._parse_item_info(selected_item)
             
-            # Step 3: Create DINOX prompt
+            # Step 2: Create DINOX prompt
             text_prompt = self.current_item + " ."
             
-            # Step 4: Detect with DINOX
+            # Step 3: Detect with DINOX
             if self.node:
                 self.node.get_logger().info(f"Detecting with DINOX using prompt: '{text_prompt}'")
             input_boxes, confidences, class_names, class_ids = self._detect_with_dinox(temp_path, text_prompt)
@@ -107,7 +207,7 @@ class DinoxDetector(BaseDetector):
                     self.node.get_logger().warn("DINOX could not detect the selected food item")
                 return None
             
-            # Step 5: Get highest confidence detection
+            # Step 4: Get highest confidence detection
             highest_idx = np.argmax(confidences)
             highest_bbox = input_boxes[highest_idx]
             highest_confidence = confidences[highest_idx]
@@ -212,7 +312,6 @@ class DinoxDetector(BaseDetector):
         else:
             self.current_item = selected_item
             bite_number = 1
-            print("No bite number found, defaulting to 1")
         
         # Set single/multi bite based on number
         self.single_bite = bite_number <= 1
