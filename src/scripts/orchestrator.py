@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Vector3, Pose
 from std_msgs.msg import Float64, Bool
 import asyncio
 import sys
@@ -10,148 +10,126 @@ import yaml
 import time
 import copy
 import numpy as np
+import os
 
-# Import service interfaces
-from raf_interfaces.srv import StartFaceServoing, GetPose
+# Import controllers/checkers
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import controllers/checkers from existing scripts
-sys.path.append('/home/mcrr-lab/raf-live/src/scripts')
 from robot_controller_ros2 import KinovaRobotControllerROS2
 from autonomous_checker import AutonomousChecker
+from raf_interfaces.srv import StartFaceServoing, GetPose
 
-class MinimalOrchestrator(Node):
+
+class SimplifiedOrchestrator(Node):
     def __init__(self):
-        super().__init__('minimal_orchestrator')
+        super().__init__('simplified_orchestrator')
         
-        config_path = '/home/mcrr-lab/raf-live/config.yaml'
+        config_path = os.path.expanduser('~/raf-live/config.yaml')
         
         # Load config
         with open(config_path, 'r') as file:
             self.config = yaml.safe_load(file)
         
+        # Initialize robot controller and autonomous checker
         self.robot_controller = KinovaRobotControllerROS2(config_path)
         self.autonomous_checker = AutonomousChecker(self.config)
         
-        # Food detection data
-        self.latest_grip_value = None
-        self.servoing_on = False
+        # Config parameters
         self.distance_from_target = self.config['feeding']['dist_from_food']
-        
-        # Face detection configuration - check if enabled in config
+        self.grip_close_amount = self.config['feeding']['grip_close']
         self.face_detection_enabled = self.config['feeding'].get('face_detection', {}).get('enabled', False)
-        if self.face_detection_enabled:
-            self.face_gain_planar = self.config['feeding']['face_detection'].get('gain_planar', 0.35)
-            self.face_gain_depth = self.config['feeding']['face_detection'].get('gain_depth', 0.35)
-            self.face_target_distance = self.config['feeding']['face_detection'].get('target_distance', 0.04)
-            self.get_logger().info(f'Face detection enabled with gains: planar={self.face_gain_planar}, depth={self.face_gain_depth}, target={self.face_target_distance}m')
-        else:
-            self.get_logger().info('Face detection disabled - will use preset positions')
         
-        # Subscribers for food detection outputs
-        self.grip_value_sub = self.create_subscription(
-            Float64, '/grip_value', self.grip_value_callback, 1)
-        self.servoing_on_sub = self.create_subscription(
-            Bool, '/servoing_on', self.servoing_on_callback, 1)
-        self.food_height_sub = self.create_subscription(
-            Float64, '/food_height', self.food_height_callback, 1)
+        # State variables - only what we actually need
+        self.latest_position_vector = Vector3()
+        self.latest_grip_value = None
+        self.latest_food_height = None
+        self.food_detection_ready = False
+        
+        # Subscribers - only the essential data
         self.position_vector_sub = self.create_subscription(
             Vector3, '/position_vector', self.position_vector_callback, 1)
-        self.detection_ready_sub = self.create_subscription(
-            Bool, '/detection_ready', self.detection_ready_callback, 1)
+        self.grip_value_sub = self.create_subscription(
+            Float64, '/grip_value', self.grip_value_callback, 1)
+        self.food_height_sub = self.create_subscription(
+            Float64, '/food_height', self.food_height_callback, 1)
+        self.food_detection_ready_sub = self.create_subscription(
+            Bool, '/food_detection_ready', self.food_detection_ready_callback, 1)
         
-        # Subscribe to face servoing completion signal
-        self.face_servoing_complete_sub = self.create_subscription(
-            Bool, '/face_servoing_complete', self.face_servoing_complete_callback, 1)
-        
-        self.detection_ready = False
-        self.face_servoing_complete = False
-        self.servoing_off_time = None  # Track when servoing was turned off
-        
-        self.latest_food_height = None
-        self.latest_position_magnitude = 0.0
-        
-        # Publishers for new topics
+        # Publishers - simple control interface
+        self.start_food_detection_pub = self.create_publisher(Bool, '/start_food_detection', 1)
+        self.start_face_detection_pub = self.create_publisher(Bool, '/start_face_detection', 1)
         self.servoing_on_pub = self.create_publisher(Bool, '/servoing_on', 1)
-        self.food_acquired_pub = self.create_publisher(Bool, '/food_acquired', 1)
+        self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 1)
         
-        # Service clients for detection services
-        self.food_service_client = self.create_client(StartFaceServoing, 'start_food_servoing')
-        if self.face_detection_enabled:
-            self.face_service_client = self.create_client(StartFaceServoing, 'start_face_servoing')
+        # Service client for getting current pose
         self.get_pose_client = self.create_client(GetPose, '/my_gen3/get_pose')
-        
-        # Wait for services
-        while not self.food_service_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for food servoing service...')
-        
-        if self.face_detection_enabled:
-            while not self.face_service_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().info('Waiting for face servoing service...')
-        
         while not self.get_pose_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('Waiting for get pose service at /my_gen3/get_pose...')
-            self.get_logger().info('Make sure the kortex controller (controller.cpp) is running!')
+            self.get_logger().info('Waiting for /my_gen3/get_pose service...')
         
-        self.get_logger().info('All services connected successfully!')
-        self.get_logger().info('Minimal Orchestrator ready!')
+        self.get_logger().info(f'Simplified Orchestrator initialized!')
+        self.get_logger().info(f'Face detection enabled: {self.face_detection_enabled}')
+    
+    def position_vector_callback(self, msg):
+        """Store latest position vector"""
+        self.latest_position_vector = msg
     
     def grip_value_callback(self, msg):
-        """Store latest grip value from food detection"""
+        """Store latest grip value"""
         self.latest_grip_value = msg.data
-
+    
     def food_height_callback(self, msg):
         """Store latest food height"""
         self.latest_food_height = msg.data
     
-    def position_vector_callback(self, msg):
-        """Track position vector magnitude for distance monitoring"""
-        # Assuming this is the magnitude of the position vector
-        self.latest_position_magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
-
-    def detection_ready_callback(self, msg):
-        """Detection is ready and tracking has started"""
+    def food_detection_ready_callback(self, msg):
+        """Track when food detection is ready"""
+        self.food_detection_ready = msg.data
         if msg.data:
-            self.detection_ready = True
-            self.get_logger().info("Food detection and tracking is ready!")
-
-    def face_servoing_complete_callback(self, msg):
-        """Handle face servoing completion signal"""
-        if msg.data:
-            self.face_servoing_complete = True
-            self.get_logger().info("Face servoing completed! (callback received)")
+            self.get_logger().info("Food detection is ready - tracking initialized!")
     
-    def servoing_on_callback(self, msg):
-        """Track servoing state (for monitoring only)"""
-        prev_servoing_on = self.servoing_on
-        self.servoing_on = msg.data
-        
-        if not self.servoing_on and prev_servoing_on:
-            # Servoing just turned off
-            self.servoing_off_time = time.time()
-            self.get_logger().info("Servoing disabled - recording time")
-        elif self.servoing_on and not prev_servoing_on:
-            # Servoing just turned on
-            self.servoing_off_time = None
-            self.get_logger().info("Servoing enabled")
-    
-    async def wait_for_target_reached(self, timeout=30.0):
-        """Wait for robot to reach close to the food (small position vector)"""
-        self.get_logger().info("Waiting for robot to reach close to food...")
+    async def wait_for_food_detection_ready(self, timeout=30.0):
+        """Wait for food detection to be ready (tracking initialized)"""
+        self.get_logger().info("Waiting for food detection to be ready...")
         
         start_time = time.time()
-        stable_count = 0
-        required_stable_count = 5  # Need 5 consecutive small distances
         
         while rclpy.ok():
             if time.time() - start_time > timeout:
-                self.get_logger().warn(f"Timeout waiting for target after {timeout}s")
+                self.get_logger().error(f"Timeout waiting for food detection ready after {timeout}s")
                 return False
             
-            # Check if we're close to the food (small position vector magnitude)
-            if self.latest_position_magnitude < 0.005:  # 5mm threshold
+            if self.food_detection_ready:
+                self.get_logger().info("Food detection ready!")
+                return True
+            
+            await asyncio.sleep(0.1)
+            rclpy.spin_once(self, timeout_sec=0)
+        
+            return False
+    
+        """Wait until position vector magnitude is small (robot reached target)"""
+        self.get_logger().info(f"Waiting for position vector < {threshold}m...")
+        
+        start_time = time.time()
+        stable_count = 0
+        required_stable_count = 10  # Need 10 consecutive small distances (1 second at 10Hz)
+        
+        while rclpy.ok():
+            if time.time() - start_time > timeout:
+                self.get_logger().warn(f"Timeout waiting for small position vector after {timeout}s")
+                return False
+            
+            # Check position vector magnitude
+            magnitude = np.linalg.norm([
+                self.latest_position_vector.x,
+                self.latest_position_vector.y,
+                self.latest_position_vector.z
+            ])
+            
+            if magnitude < threshold:
                 stable_count += 1
                 if stable_count >= required_stable_count:
-                    self.get_logger().info("Robot has reached close to food!")
+                    self.get_logger().info(f"Position vector consistently small: {magnitude:.3f}m")
                     return True
             else:
                 stable_count = 0
@@ -161,161 +139,147 @@ class MinimalOrchestrator(Node):
         
         return False
     
-    async def get_current_pose(self):
-        """Get current pose using the GetPose service"""
+    async def wait_for_small_position_vector(self, threshold=0.005, timeout=30.0):
+        """Get current robot pose from the robot state topic"""
         try:
-            self.get_logger().info("Calling GetPose service at /my_gen3/get_pose...")
-            
-            if not self.get_pose_client.service_is_ready():
-                self.get_logger().error("GetPose service is not ready - controller may have disconnected")
-                return None
-            
-            request = GetPose.Request()
-            future = self.get_pose_client.call_async(request)
-            
-            start_time = time.time()
-            timeout = 5.0
-            
-            while not future.done() and rclpy.ok():
-                if time.time() - start_time > timeout:
-                    self.get_logger().error(f'GetPose service call timed out after {timeout} seconds')
-                    return None
-                
-                rclpy.spin_once(self, timeout_sec=0.1)
-                await asyncio.sleep(0.01)
-            
-            if not future.done():
-                self.get_logger().error('GetPose service call incomplete')
-                return None
-                
-            response = future.result()
-            
-            if response.success:
-                self.get_logger().info(f'Current pose: position=({response.current_pose.position.x:.3f}, {response.current_pose.position.y:.3f}, {response.current_pose.position.z:.3f})')
-                return response.current_pose
+            current_pose = await self.robot_controller.get_current_pose()
+            if current_pose:
+                self.get_logger().info(f'Current pose: z={current_pose.position.z:.3f}m')
+                return current_pose
             else:
-                self.get_logger().error(f'GetPose service returned failure: {response.message}')
+                self.get_logger().error("Failed to get current pose")
                 return None
-                
         except Exception as e:
-            self.get_logger().error(f'Error calling get pose service: {e}')
+            self.get_logger().error(f'Error getting current pose: {e}')
             return None
     
-    async def call_food_detection_service(self):
-        """Call food detection service and return immediately"""
-        self.get_logger().info("Starting food detection servoing...")
+    async def acquire_food_with_retries(self, max_retries=3):
+        """Attempt to acquire food with retry logic"""
+        for attempt in range(max_retries):
+            self.get_logger().info(f"=== Food acquisition attempt {attempt + 1}/{max_retries} ===")
+            
+            # Reset state
+            self.latest_grip_value = None
+            self.latest_food_height = None
+            self.food_detection_ready = False
+            
+            # Step 1: Start food detection
+            self.get_logger().info("1. Starting food detection...")
+            self.start_food_detection_pub.publish(Bool(data=True))
+            
+            # Step 2: Set gains and start servoing
+            self.get_logger().info("2. Setting gains and waiting for detection ready...")
+            gains = Vector3(x=0.6, y=0.6, z=0.6)
+            self.twist_gains_pub.publish(gains)
+            
+            # Wait for detection to be ready before starting servoing
+            if not await self.wait_for_food_detection_ready(timeout=30.0):
+                self.get_logger().error("Food detection failed to initialize")
+                self.start_food_detection_pub.publish(Bool(data=False))
+                continue
+            
+            # Now start servoing
+            self.get_logger().info("3. Starting servoing...")
+            self.servoing_on_pub.publish(Bool(data=True))
+            
+            # Step 3: Wait for robot to reach food
+            self.get_logger().info("4. Waiting for robot to reach food...")
+            success = await self.wait_for_small_position_vector(threshold=0.005, timeout=30.0)
+            
+            if not success:
+                self.get_logger().error("Failed to reach food - timeout")
+                self.servoing_on_pub.publish(Bool(data=False))
+                self.start_food_detection_pub.publish(Bool(data=False))
+                continue
+            
+            # Step 4: Stop servoing for pickup
+            self.get_logger().info("5. Reached food! Stopping servoing for pickup...")
+            self.servoing_on_pub.publish(Bool(data=False))
+            await asyncio.sleep(0.5)
+            
+            # Step 5: Execute pickup sequence
+            if not await self.execute_pickup_sequence():
+                self.get_logger().warn(f"Pickup sequence failed on attempt {attempt + 1}")
+                # Keep detection running for retry
+                continue
+            
+            # Step 6: Check if food was picked up
+            self.get_logger().info("6. Checking if food was picked up...")
+            pickup_success = self.wait_for_food_pickup()
+            
+            if pickup_success:
+                self.get_logger().info("Food pickup successful!")
+                # Stop food detection now that we have the food
+                self.start_food_detection_pub.publish(Bool(data=False))
+                return True
+            else:
+                self.get_logger().warn(f"Food pickup failed on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    # Restart servoing for next attempt (keep detection running)
+                    self.get_logger().info("Restarting servoing for retry...")
+                    self.servoing_on_pub.publish(Bool(data=True))
         
-        request = StartFaceServoing.Request()
-        request.gain_planar = 0.6
-        request.gain_depth = 0.6
-        request.target_distance = self.distance_from_target
-        
+        # All attempts failed
+        self.get_logger().error(f"Failed to acquire food after {max_retries} attempts")
+        self.start_food_detection_pub.publish(Bool(data=False))
+        return False
+    
+    async def execute_pickup_sequence(self):
+        """Execute the physical pickup sequence"""
         try:
-            response = await self.food_service_client.call_async(request)
-            if not response.success:
-                self.get_logger().error(f"Food detection service failed: {response.message}")
+            # Check that we have the necessary data
+            if self.latest_grip_value is None:
+                self.get_logger().error("No grip value available for pickup!")
                 return False
             
-            self.get_logger().info("Food detection service started successfully")
+            if self.latest_food_height is None:
+                self.get_logger().error("No food height available for pickup!")
+                return False
+            
+            # Set gripper to food width
+            self.get_logger().info(f"Setting gripper to food width: {self.latest_grip_value:.3f}")
+            if not await self.robot_controller.set_gripper(self.latest_grip_value):
+                self.get_logger().error("Failed to set gripper for pickup!")
+                return False
+            
+            # Get current pose and move down
+            current_pose = await self.get_current_pose()
+            if not current_pose:
+                return False
+            
+            pickup_pose = copy.deepcopy(current_pose)
+            move_down_distance = self.distance_from_target + self.latest_food_height
+            pickup_pose.position.z -= move_down_distance
+            
+            self.get_logger().info(f"Moving down {move_down_distance:.4f}m for pickup")
+            if not await self.robot_controller.move_to_pose(pickup_pose):
+                self.get_logger().error("Failed to move down for pickup!")
+                return False
+            
+            # Close gripper more
+            close_value = min(1.0, self.latest_grip_value + self.grip_close_amount)
+            self.get_logger().info(f"Closing gripper from {self.latest_grip_value:.3f} to {close_value:.3f}")
+            if not await self.robot_controller.set_gripper(close_value):
+                self.get_logger().error("Failed to close gripper!")
+                return False
+            
+            # Move back to overlook
+            self.get_logger().info("Moving back to overlook after pickup...")
+            if not await self.robot_controller.reset():
+                self.get_logger().error("Failed to move back to overlook!")
+                return False
+            
             return True
             
         except Exception as e:
-            self.get_logger().error(f"Food detection service failed: {e}")
-            return False
-    
-    async def call_face_detection_service(self):
-        """Call face detection service and wait for completion"""
-        if not self.face_detection_enabled:
-            self.get_logger().error("Face detection service called but face detection is disabled!")
-            return False
-            
-        self.get_logger().info("Starting face detection servoing...")
-        
-        # Reset completion flags
-        self.face_servoing_complete = False
-        self.servoing_off_time = None
-        self._servoing_off_count = 0
-        
-        request = StartFaceServoing.Request()
-        request.gain_planar = self.face_gain_planar
-        request.gain_depth = self.face_gain_depth
-        request.target_distance = self.face_target_distance
-        
-        try:
-            self.get_logger().info("Calling face detection service...")
-            
-            # Call the service and wait for response
-            future = self.face_service_client.call_async(request)
-            
-            # Wait for the service call to complete
-            service_start_time = time.time()
-            service_timeout = 10.0  # 10 second timeout for service call
-            
-            while not future.done() and rclpy.ok():
-                if time.time() - service_start_time > service_timeout:
-                    self.get_logger().error("Face detection service call timed out")
-                    return False
-                
-                rclpy.spin_once(self, timeout_sec=0.1)
-                await asyncio.sleep(0.01)
-            
-            if not future.done():
-                self.get_logger().error("Face detection service call incomplete")
-                return False
-                
-            response = future.result()
-            if not response.success:
-                self.get_logger().error(f"Face detection service failed to start: {response.message}")
-                return False
-            
-            self.get_logger().info("Face detection service started, waiting for completion...")
-            
-            # Wait for face servoing to complete with multiple detection methods
-            start_time = time.time()
-            timeout = 60.0  # 1 minute timeout
-            
-            while rclpy.ok():
-                current_time = time.time()
-                
-                # Check timeout first
-                if current_time - start_time > timeout:
-                    self.get_logger().warn("Face servoing timed out after 60 seconds")
-                    return False
-                
-                # Method 1: Check if we received the completion callback
-                if self.face_servoing_complete:
-                    self.get_logger().info("Face detection service completed successfully (via callback)")
-                    return True
-                
-                # Method 2: Check if servoing has been off for 3+ seconds
-                if self.servoing_off_time is not None and (current_time - self.servoing_off_time) > 3.0:
-                    self.get_logger().info("Servoing has been off for 3+ seconds - assuming face servoing complete")
-                    return True
-                
-                # Method 3: Check if we're not servoing and haven't been for a bit
-                if not self.servoing_on:
-                    self._servoing_off_count += 1
-                    
-                    if self._servoing_off_count > 30:  # 3 seconds at 0.1s intervals
-                        self.get_logger().info("Servoing has been consistently off - face servoing complete")
-                        return True
-                else:
-                    self._servoing_off_count = 0
-                
-                await asyncio.sleep(0.1)
-                rclpy.spin_once(self, timeout_sec=0)
-            
-            self.get_logger().error("Face detection service did not complete properly")
-            return False
-            
-        except Exception as e:
-            self.get_logger().error(f"Face detection service failed with exception: {e}")
+            self.get_logger().error(f"Error in pickup sequence: {e}")
             return False
     
     def wait_for_food_pickup(self):
         """Check if food was picked up using autonomous checker"""
         self.get_logger().info("Checking if food was picked up...")
         
+        # Spin the autonomous checker to get latest data
         for _ in range(10):
             rclpy.spin_once(self.autonomous_checker, timeout_sec=0.1)
             time.sleep(0.1)
@@ -327,171 +291,58 @@ class MinimalOrchestrator(Node):
         self.get_logger().info("Waiting for food to be removed...")
         return self.autonomous_checker.check_object_removed()
     
-    async def acquire_food_with_retries(self, max_retries=3):
-        """Attempt to acquire food with retry logic"""
-        for attempt in range(max_retries):
-            self.get_logger().info(f"Food acquisition attempt {attempt + 1}/{max_retries}")
-
-            if not await self.robot_controller.set_gripper(0.5):
-                self.get_logger().error("Failed to set gripper for pickup!")
-                continue
-
-            await asyncio.sleep(0.5)
-
-            # Enable servoing for this attempt
-            self.get_logger().info("Starting servoing for food approach...")
-            self.servoing_on_pub.publish(Bool(data=True))
-
-            # Wait for detection to be ready
-            self.detection_ready = False  # Reset flag
-            self.get_logger().info("Waiting for food detection to initialize...")
-
-            timeout_start = time.time()
-            while not self.detection_ready and rclpy.ok():
-                if time.time() - timeout_start > 30.0:
-                    self.get_logger().error("Timeout waiting for detection ready signal!")
-                    self.servoing_on_pub.publish(Bool(data=False))
-                    await asyncio.sleep(0.5)
-                    break
-                
-                await asyncio.sleep(0.1)
-                rclpy.spin_once(self, timeout_sec=0)
-
-            if not self.detection_ready:
-                self.get_logger().error("Detection failed to initialize, skipping to next attempt")
-                continue  # Skip to next attempt
-
-            self.get_logger().info("Detection ready! Proceeding with servoing...")
-
-            # Wait for robot to reach close to food
-            if not await self.wait_for_target_reached():
-                self.get_logger().error("Failed to reach food - timeout")
-                # Stop servoing before continuing to next attempt
-                self.servoing_on_pub.publish(Bool(data=False))
-                continue
-            
-            # Stop servoing once we're close
-            self.get_logger().info("Reached target, stopping servoing for pickup...")
-            self.servoing_on_pub.publish(Bool(data=False))
-
-            # Now do the pickup sequence
-            self.get_logger().info("Attempting food pickup...")
-
-            grip_value = self.latest_grip_value
-
-            # Check if we have a valid grip value
-            if grip_value is None:
-                self.get_logger().error("No grip value available for pickup!")
-                continue
-            
-            # Set gripper to food width
-            if not await self.robot_controller.set_gripper(grip_value):
-                self.get_logger().error("Failed to set gripper for pickup!")
-                continue
-
-            # Get current pose and move down
-            self.get_logger().info("Getting current pose for pickup movement...")
-            current_pose = await self.get_current_pose()
-            if current_pose:
-                pickup_pose = copy.deepcopy(current_pose)
-                if self.latest_food_height is not None:
-                    self.get_logger().info(f"Using measured food height: {self.latest_food_height:.4f}m")
-
-                pickup_pose.position.z -= (self.distance_from_target + self.latest_food_height)
-
-                self.get_logger().info(f"Moving down {self.latest_food_height+self.distance_from_target}m")
-                move_result = await self.robot_controller.move_to_pose(pickup_pose)
-                self.get_logger().info(f"Move down result: {move_result}")
-                if not move_result:
-                    self.get_logger().error("Failed to move down for pickup!")
-                    continue
-                else:
-                    self.get_logger().info("Successfully moved down for pickup")
-            else:
-                self.get_logger().error("Could not get current pose - this is blocking the pickup sequence!")
-                continue
-            
-            # Close gripper slightly more
-            close_value = min(1.0, grip_value + 0.056)
-            self.get_logger().info(f"Closing gripper more from {grip_value:.3f} to {close_value:.3f}")
-            if not await self.robot_controller.set_gripper(close_value):
-                self.get_logger().error("Failed to close gripper!")
-                continue
-            else:
-                self.get_logger().info("Successfully closed gripper more")
-
-            # Move back to overlook so we dont lose the segmentation
-            self.get_logger().info("Moving back to overlook position after pickup...")
-            if not await self.robot_controller.reset():
-                self.get_logger().error("Failed to move back to overlook!")
-                continue
-            
-            # Check if food was picked up
-            pickup_success = self.wait_for_food_pickup()
-            if pickup_success:
-                self.get_logger().info("Food pickup successful!")
-                # Signal that food was acquired
-                self.food_acquired_pub.publish(Bool(data=True))
-                return True
-            else:
-                self.get_logger().warn(f"Food pickup failed on attempt {attempt + 1}")
-                # Continue to next retry if not max attempts
-                if attempt < max_retries - 1:
-                    self.get_logger().info("Retrying food acquisition...")
-
-                    # Explicitly stop servoing and wait before retry
-                    self.get_logger().info("Ensuring servoing is stopped before retry...")
-                    self.servoing_on_pub.publish(Bool(data=False))
-
-        # All attempts failed
-        self.get_logger().error(f"Failed to acquire food after {max_retries} attempts")
-        # Signal that we're done trying (this will end the service)
-        self.food_acquired_pub.publish(Bool(data=True))
-        return False
-    
     async def move_food_to_mouth(self):
         """Move food to mouth using face detection or preset positions"""
         if self.face_detection_enabled:
-            self.get_logger().info("Using face detection to move food to mouth...")
+            self.get_logger().info("=== Moving food to mouth using face detection ===")
             
-            # Call face detection service - it handles the servoing internally
-            success = await self.call_face_detection_service()
+            # Start face detection
+            self.get_logger().info("1. Starting face detection...")
+            self.start_face_detection_pub.publish(Bool(data=True))
+            
+            # Set gains for face servoing
+            self.get_logger().info("2. Setting face servoing gains...")
+            face_gains = Vector3(x=0.35, y=0.35, z=0.35)
+            self.twist_gains_pub.publish(face_gains)
+            await asyncio.sleep(0.5)
+            
+            # Start servoing
+            self.get_logger().info("3. Starting face servoing...")
+            self.servoing_on_pub.publish(Bool(data=True))
+            
+            # Wait for robot to reach mouth
+            self.get_logger().info("4. Waiting for robot to reach mouth...")
+            success = await self.wait_for_small_position_vector(threshold=0.04, timeout=60.0)
+            
+            # Stop face detection and servoing
+            self.get_logger().info("5. Stopping face detection and servoing...")
+            self.servoing_on_pub.publish(Bool(data=False))
+            self.start_face_detection_pub.publish(Bool(data=False))
             
             if success:
                 self.get_logger().info("Face detection servoing completed successfully!")
                 return True
             else:
                 self.get_logger().warn("Face detection failed, falling back to preset position")
-                # Fall back to preset bite transfer position
-                if not await self.robot_controller.move_to_bite_transfer():
-                    self.get_logger().error("Failed to move to preset bite transfer position!")
-                    return False
-                return True
+                # Fall back to preset position
+                return await self.robot_controller.move_to_bite_transfer()
         else:
             # Use preset bite transfer position
-            self.get_logger().info("Moving to preset bite transfer position...")
-            if not await self.robot_controller.move_to_bite_transfer():
-                self.get_logger().error("Failed to move to bite transfer position!")
-                return False
-            return True
+            self.get_logger().info("=== Moving to preset bite transfer position ===")
+            return await self.robot_controller.move_to_bite_transfer()
     
     async def run_feeding_cycle(self):
-        """Main feeding cycle with retry logic and face detection integration"""
+        """Main feeding cycle - simplified linear flow"""
         cycle_count = 1
         
         while rclpy.ok():
-            self.get_logger().info(f"\n=== FEEDING CYCLE {cycle_count} ===")
+            self.get_logger().info(f"\n{'='*50}")
+            self.get_logger().info(f"FEEDING CYCLE {cycle_count}")
+            self.get_logger().info(f"{'='*50}")
             
             try:
-                # Reset state for new cycle
-                self.servoing_on_pub.publish(Bool(data=False))
-                self.food_acquired_pub.publish(Bool(data=False))
-                self.face_servoing_complete = False  # Reset face servoing flag
-                self.servoing_off_time = None
-                await asyncio.sleep(0.5)
-                
-                # Step 1: Move to overlook position and set gripper
-                self.get_logger().info("Step 1: Moving to overlook and setting gripper...")
+                # Step 1: Move to overlook and open gripper
+                self.get_logger().info("STEP 1: Moving to overlook and setting gripper...")
                 if not await self.robot_controller.reset():
                     self.get_logger().error("Failed to reset robot!")
                     break
@@ -499,45 +350,35 @@ class MinimalOrchestrator(Node):
                     self.get_logger().error("Failed to set gripper!")
                     break
                 
-                # Step 2: Start food detection service
-                self.get_logger().info("Step 2: Starting food detection service...")
-                if not await self.call_food_detection_service():
-                    self.get_logger().error("Food detection service failed to start!")
-                    continue
-                
-                # Step 3: Attempt food acquisition with retries
-                self.get_logger().info("Step 3: Attempting food acquisition...")
-                acquisition_success = await self.acquire_food_with_retries()
-                
-                if not acquisition_success:
+                # Step 2: Acquire food with retries
+                self.get_logger().info("STEP 2: Acquiring food...")
+                if not await self.acquire_food_with_retries():
                     self.get_logger().error("Food acquisition failed completely, restarting cycle")
                     continue
                 
-                # Step 4: Move to intermediate position
-                self.get_logger().info("Step 4: Moving to intermediate position...")
+                # Step 3: Move to intermediate position
+                self.get_logger().info("STEP 3: Moving to intermediate position...")
                 if not await self.robot_controller.move_to_intermediate():
                     self.get_logger().error("Failed to move to intermediate!")
                     continue
                 
-                # Step 5: Move food to mouth (face detection or preset)
-                self.get_logger().info("Step 5: Moving food to mouth...")
-                mouth_success = await self.move_food_to_mouth()
-                
-                if not mouth_success:
+                # Step 4: Move food to mouth
+                self.get_logger().info("STEP 4: Moving food to mouth...")
+                if not await self.move_food_to_mouth():
                     self.get_logger().error("Failed to move food to mouth!")
                     continue
                 
-                # Step 6: Wait for food removal
-                self.get_logger().info("Step 6: Waiting for food to be removed...")
+                # Step 5: Wait for food removal
+                self.get_logger().info("STEP 5: Waiting for food to be removed...")
                 self.wait_for_food_removal()
                 
-                # Step 7: Reset to overlook position after food removal
-                self.get_logger().info("Step 7: Food removed! Resetting to overlook position...")
+                # Step 6: Reset to overlook position
+                self.get_logger().info("STEP 6: Resetting to overlook position...")
                 if not await self.robot_controller.reset():
                     self.get_logger().error("Failed to reset robot after food removal!")
                     break
                 
-                self.get_logger().info(f"=== CYCLE {cycle_count} COMPLETED SUCCESSFULLY! ===")
+                self.get_logger().info(f"🎉 CYCLE {cycle_count} COMPLETED SUCCESSFULLY! 🎉")
                 cycle_count += 1
                 
             except KeyboardInterrupt:
@@ -550,14 +391,16 @@ class MinimalOrchestrator(Node):
         # Final cleanup
         self.get_logger().info("Feeding complete. Cleaning up...")
         self.servoing_on_pub.publish(Bool(data=False))
-        self.food_acquired_pub.publish(Bool(data=True))
+        self.start_food_detection_pub.publish(Bool(data=False))
+        self.start_face_detection_pub.publish(Bool(data=False))
         await self.robot_controller.reset()
+
 
 async def main():
     rclpy.init()
     
     try:
-        orchestrator = MinimalOrchestrator()
+        orchestrator = SimplifiedOrchestrator()
         
         # Create an executor to run in the background
         from rclpy.executors import MultiThreadedExecutor
@@ -579,6 +422,7 @@ async def main():
         print(f"Exception occurred: {e}")
     finally:
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     asyncio.run(main())

@@ -7,9 +7,9 @@ from std_msgs.msg import Float64, Bool
 from raf_interfaces.srv import SetTwist
 import numpy as np
 
-class ServoingNode(Node):
+class SimplifiedServoingNode(Node):
     def __init__(self):
-        super().__init__('servoing_node')
+        super().__init__('simplified_servoing_node')
         
         # State variables
         self.position_vector = Vector3()
@@ -36,23 +36,14 @@ class ServoingNode(Node):
         # Timer for control loop (50Hz)
         self.control_timer = self.create_timer(0.02, self.control_loop)
         
-        self.get_logger().info('Servoing Node initialized')
+        self.get_logger().info('Simplified Servoing Node initialized')
         self.get_logger().info(f'Default gains: planar={self.linear_twist_gains.x}, depth={self.linear_twist_gains.z}')
     
     def position_vector_callback(self, msg):
         """Handle incoming position vectors"""
         self.position_vector = msg
         
-        # Check if this is a zero vector
-        magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
-        
-        # if magnitude < 0.001:  # Essentially zero
-        #     if self.servoing_on:
-        #         self.get_logger().info("Received zero vector - stopping servoing")
-        #         self.servoing_on = False
-        #         self.send_zero_twist()
-        
-            # Non-zero vector received, ensure servoing is active if it should be
+        # Optional: log magnitude periodically for debugging
         if hasattr(self, '_log_counter'):
             self._log_counter += 1
         else:
@@ -60,6 +51,7 @@ class ServoingNode(Node):
         
         # Log every 50 messages (~1 second at 50Hz)
         if self._log_counter % 50 == 0:
+            magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
             self.get_logger().info(f"Position vector magnitude: {magnitude:.3f}")
     
     def food_angle_callback(self, msg):
@@ -75,14 +67,14 @@ class ServoingNode(Node):
         """Handle servoing on/off signal"""
         self.servoing_on = msg.data
         if self.servoing_on:
-            self.get_logger().info("Servoing enabled by external command")
+            self.get_logger().info("Servoing enabled")
         else:
-            self.get_logger().info("Servoing disabled by external command")
+            self.get_logger().info("Servoing disabled")
             # Send zero twist immediately when disabled
             self.send_zero_twist()
     
     def control_loop(self):
-        """Main control loop - runs at 50Hz"""
+        """Main control loop - runs at 50Hz, only sends commands when servoing is on"""
         if not self.servoing_on:
             return
         
@@ -135,9 +127,10 @@ class ServoingNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to send stop command: {e}")
 
+
 def main(args=None):
     rclpy.init(args=args)
-    node = ServoingNode()
+    node = SimplifiedServoingNode()
     
     try:
         rclpy.spin(node)
@@ -148,6 +141,7 @@ def main(args=None):
         node.send_zero_twist()
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
