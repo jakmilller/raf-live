@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from robot_controller_ros2 import KinovaRobotControllerROS2
 from autonomous_checker import AutonomousChecker
-from raf_interfaces.srv import StartFaceServoing, GetPose
+from raf_interfaces.srv import GetPose
 
 
 class SimplifiedOrchestrator(Node):
@@ -105,8 +105,9 @@ class SimplifiedOrchestrator(Node):
             await asyncio.sleep(0.1)
             rclpy.spin_once(self, timeout_sec=0)
         
-            return False
+        return False
     
+    async def wait_for_small_position_vector(self, threshold=0.005, timeout=30.0):
         """Wait until position vector magnitude is small (robot reached target)"""
         self.get_logger().info(f"Waiting for position vector < {threshold}m...")
         
@@ -119,7 +120,7 @@ class SimplifiedOrchestrator(Node):
                 self.get_logger().warn(f"Timeout waiting for small position vector after {timeout}s")
                 return False
             
-            # Check position vector magnitude
+            # Check position vector magnitude using the actual position vector data
             magnitude = np.linalg.norm([
                 self.latest_position_vector.x,
                 self.latest_position_vector.y,
@@ -139,29 +140,58 @@ class SimplifiedOrchestrator(Node):
         
         return False
     
-    async def wait_for_small_position_vector(self, threshold=0.005, timeout=30.0):
-        """Get current robot pose from the robot state topic"""
+    async def get_current_pose(self):
+        """Get current pose using the GetPose service"""
         try:
-            current_pose = await self.robot_controller.get_current_pose()
-            if current_pose:
-                self.get_logger().info(f'Current pose: z={current_pose.position.z:.3f}m')
-                return current_pose
-            else:
-                self.get_logger().error("Failed to get current pose")
+            self.get_logger().info("Calling GetPose service at /my_gen3/get_pose...")
+            
+            if not self.get_pose_client.service_is_ready():
+                self.get_logger().error("GetPose service is not ready - controller may have disconnected")
                 return None
+            
+            request = GetPose.Request()
+            future = self.get_pose_client.call_async(request)
+            
+            start_time = time.time()
+            timeout = 5.0
+            
+            while not future.done() and rclpy.ok():
+                if time.time() - start_time > timeout:
+                    self.get_logger().error(f'GetPose service call timed out after {timeout} seconds')
+                    return None
+                
+                rclpy.spin_once(self, timeout_sec=0.1)
+                await asyncio.sleep(0.01)
+            
+            if not future.done():
+                self.get_logger().error('GetPose service call incomplete')
+                return None
+                
+            response = future.result()
+            
+            if response.success:
+                self.get_logger().info(f'Current pose: position=({response.current_pose.position.x:.3f}, {response.current_pose.position.y:.3f}, {response.current_pose.position.z:.3f})')
+                return response.current_pose
+            else:
+                self.get_logger().error(f'GetPose service returned failure: {response.message}')
+                return None
+                
         except Exception as e:
-            self.get_logger().error(f'Error getting current pose: {e}')
+            self.get_logger().error(f'Error calling get pose service: {e}')
             return None
     
     async def acquire_food_with_retries(self, max_retries=3):
         """Attempt to acquire food with retry logic"""
+        self.food_detection_ready = False
         for attempt in range(max_retries):
             self.get_logger().info(f"=== Food acquisition attempt {attempt + 1}/{max_retries} ===")
             
             # Reset state
             self.latest_grip_value = None
             self.latest_food_height = None
-            self.food_detection_ready = False
+
+            if not await self.robot_controller.set_gripper(0.5):
+                self.get_logger().error("Failed to set gripper!")
             
             # Step 1: Start food detection
             self.get_logger().info("1. Starting food detection...")
