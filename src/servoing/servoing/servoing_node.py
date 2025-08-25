@@ -42,6 +42,25 @@ class ServoingNode(Node):
     def position_vector_callback(self, msg):
         """Handle incoming position vectors"""
         self.position_vector = msg
+        
+        # Check if this is a zero vector
+        magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
+        
+        # if magnitude < 0.001:  # Essentially zero
+        #     if self.servoing_on:
+        #         self.get_logger().info("Received zero vector - stopping servoing")
+        #         self.servoing_on = False
+        #         self.send_zero_twist()
+        
+            # Non-zero vector received, ensure servoing is active if it should be
+        if hasattr(self, '_log_counter'):
+            self._log_counter += 1
+        else:
+            self._log_counter = 0
+        
+        # Log every 50 messages (~1 second at 50Hz)
+        if self._log_counter % 50 == 0:
+            self.get_logger().info(f"Position vector magnitude: {magnitude:.3f}")
     
     def food_angle_callback(self, msg):
         """Handle incoming food angle"""
@@ -56,9 +75,9 @@ class ServoingNode(Node):
         """Handle servoing on/off signal"""
         self.servoing_on = msg.data
         if self.servoing_on:
-            self.get_logger().info("Servoing enabled")
+            self.get_logger().info("Servoing enabled by external command")
         else:
-            self.get_logger().info("Servoing disabled")
+            self.get_logger().info("Servoing disabled by external command")
             # Send zero twist immediately when disabled
             self.send_zero_twist()
     
@@ -88,6 +107,17 @@ class ServoingNode(Node):
             
             # Non-blocking service call
             future = self.set_twist_client.call_async(request)
+            
+            # Less verbose logging
+            if hasattr(self, '_twist_log_counter'):
+                self._twist_log_counter += 1
+            else:
+                self._twist_log_counter = 0
+            
+            # Log every 100 calls (~2 seconds at 50Hz)
+            if self._twist_log_counter % 100 == 0:
+                linear_mag = np.linalg.norm([twist.linear.x, twist.linear.y, twist.linear.z])
+                self.get_logger().info(f"Servoing active - linear magnitude: {linear_mag:.3f}")
                 
         except Exception as e:
             self.get_logger().error(f"Failed to send twist command: {e}")

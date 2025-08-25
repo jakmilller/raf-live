@@ -36,7 +36,8 @@ class FaceDetectionServiceNode(Node):
         # Service state
         self.service_active = False
         self.current_gains = Vector3()
-        self.current_min_distance = 0.03  # Default 3cm
+        self.current_target_distance = 0.03  # Default 3cm
+        self.current_goal_handle = None  # Store the service goal handle
         
         # TF2 for coordinate transformations
         self.tf_buffer = tf2_ros.Buffer()
@@ -90,16 +91,15 @@ class FaceDetectionServiceNode(Node):
             10
         )
         
-        # Subscribe to finished servoing signal
-        self.finished_servoing_sub = self.create_subscription(
-            Bool, '/finished_servoing', self.finished_servoing_callback, 10)
-        
-        # Publisher for position vector
-        self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 10)
-        
-        # Publishers for servoing node configuration
+        # Publishers for servoing control (matching food detection pattern)
+        self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 1)
+        self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 1)  # Will always be 0
         self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 10)
         self.min_distance_pub = self.create_publisher(Float64, '/min_distance', 10)
+        self.servoing_on_pub = self.create_publisher(Bool, '/servoing_on', 1)
+        
+        # Publisher to signal face servoing completion (like food_acquired)
+        self.face_servoing_complete_pub = self.create_publisher(Bool, '/face_servoing_complete', 1)
         
         # Create the service
         self.face_servoing_service = self.create_service(
@@ -110,6 +110,10 @@ class FaceDetectionServiceNode(Node):
         
         # Processing timer (only active during service)
         self.timer = None
+        
+        # State tracking
+        self.consecutive_zero_count = 0
+        self.max_zero_count = 2  # Stop after 2 consecutive zero vectors
         
         self.get_logger().info('Face Detection Service Node initialized and ready!')
 
@@ -128,17 +132,6 @@ class FaceDetectionServiceNode(Node):
 
     def depth_callback(self, msg):
         self.latest_depth_image = msg
-    
-    def finished_servoing_callback(self, msg):
-        """Handle finished servoing signal to end service"""
-        if msg.data and self.service_active:
-            self.get_logger().info('Received finished servoing signal - ending face detection service')
-            self.service_active = False
-            if self.timer:
-                self.timer.cancel()
-                self.timer = None
-            # Publish final zero vector to ensure servoing stops
-            self.publish_zero_vector()
 
     def start_face_servoing_callback(self, request, response):
         """Service callback to start face servoing"""
@@ -158,11 +151,14 @@ class FaceDetectionServiceNode(Node):
         self.current_gains.x = request.gain_planar
         self.current_gains.y = request.gain_planar  # Same for both x and y
         self.current_gains.z = request.gain_depth
-        self.current_min_distance = request.target_distance
+        self.current_target_distance = request.target_distance
         
         # Publish gains and min distance to servoing node
         self.twist_gains_pub.publish(self.current_gains)
-        self.min_distance_pub.publish(Float64(data=self.current_min_distance))
+        self.min_distance_pub.publish(Float64(data=self.current_target_distance))
+        
+        # Reset state
+        self.consecutive_zero_count = 0
         
         # Activate service
         self.service_active = True
@@ -171,6 +167,9 @@ class FaceDetectionServiceNode(Node):
         if self.timer:
             self.timer.cancel()
         self.timer = self.create_timer(0.1, self.process_frame)
+        
+        # Enable servoing
+        self.servoing_on_pub.publish(Bool(data=True))
         
         self.get_logger().info(f'Started face servoing with gains: planar={request.gain_planar}, depth={request.gain_depth}, target_distance={request.target_distance}')
         
@@ -246,6 +245,7 @@ class FaceDetectionServiceNode(Node):
     def detect_mouth_and_publish_vector(self):
         """Detect mouth position and publish position vector"""
         if self.latest_color_image is None or self.latest_depth_image is None:
+            self.publish_zero_vector()
             return
         
         try:
@@ -304,13 +304,18 @@ class FaceDetectionServiceNode(Node):
             
             # Check if we're close enough (within target distance)
             distance = np.linalg.norm([vector.x, vector.y, vector.z])
-            if distance < self.current_min_distance:
-                self.get_logger().info(f"Robot is within {self.current_min_distance}m of mouth, publishing zero vector")
+            if distance < self.current_target_distance:
+                self.get_logger().info(f"Robot is within {self.current_target_distance}m of mouth, publishing zero vector")
                 self.publish_zero_vector()
                 return
             
-            # Publish the position vector
+            # Publish the position vector and zero food angle (no orientation control)
             self.position_vector_pub.publish(vector)
+            self.food_angle_pub.publish(Float64(data=0.0))  # Always 0 for face detection
+            
+            # Reset consecutive zero count since we published a non-zero vector
+            self.consecutive_zero_count = 0
+            
             self.get_logger().info(f"Published position vector: ({vector.x:.3f}, {vector.y:.3f}, {vector.z:.3f})")
                 
         except Exception as e:
@@ -318,12 +323,40 @@ class FaceDetectionServiceNode(Node):
             self.publish_zero_vector()
 
     def publish_zero_vector(self):
-        """Publish zero position vector"""
+        """Publish zero position vector and handle service completion"""
         zero_vector = Vector3()
         zero_vector.x = 0.0
         zero_vector.y = 0.0
         zero_vector.z = 0.0
         self.position_vector_pub.publish(zero_vector)
+        self.food_angle_pub.publish(Float64(data=0.0))  # Always 0 for face detection
+        
+        # Track consecutive zero vectors
+        self.consecutive_zero_count += 1
+        
+        # If we've published enough zero vectors, face servoing is complete
+        if self.consecutive_zero_count >= self.max_zero_count and self.service_active:
+            self.get_logger().info(f"Published {self.consecutive_zero_count} consecutive zero vectors - face servoing complete!")
+            self._complete_face_servoing()
+
+    def _complete_face_servoing(self):
+        """Complete face servoing and signal orchestrator"""
+        self.get_logger().info("Face servoing completed - disabling servoing and ending service")
+        
+        # Disable servoing
+        self.servoing_on_pub.publish(Bool(data=False))
+        
+        # Stop the service
+        self.service_active = False
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        
+        # Signal completion to orchestrator (like food_acquired but for face)
+        self.face_servoing_complete_pub.publish(Bool(data=True))
+        
+        # Reset state
+        self.consecutive_zero_count = 0
 
     def process_frame(self):
         """Process the latest frame for face detection (only when service is active)"""

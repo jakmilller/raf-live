@@ -11,7 +11,7 @@ feeding:
     enabled: True
     gain_planar: 0.35
     gain_depth: 0.35
-    target_distance: 0.03  # distance from face to mouth
+    target_distance: 0.04  # distance from face to mouth (4cm)
     timeout: 30
   
   # paths for audio cues
@@ -33,11 +33,9 @@ feeding:
   robotiq_offset: 0.0285
   max_retries: 3  # Maximum number of retries for food pickup
 
-
   autonomous:
     check_pixel_x: 534  # Pixel x-coordinate for pickup detection
     check_pixel_y: 419 # Pixel y-coordinate for pickup detection
-
     
     # pixels in the RS frame (848x480 res) for checking
     check_pixel_points:
@@ -47,23 +45,15 @@ feeding:
     - [528,435]
     - [534,431]
 
-      # - [232,185]
-      # - [231,185]
-      # - [230,185]
-      # - [230,184]
-      # - [231,184]
-      # - [232,184]
     consecutive_checks: 2     # Number of consecutive checks needed to confirm state
     check_interval: 0.5       # Time between checks (seconds)
-
-
 
   service_timeout: 20  
   
   # Display settings
   show_image_time: 0      
-  
-  # currently calibrated for lab (steve's house saved in config files)
+
+# Joint positions remain the same...
 joint_positions:
   overlook:
   - -0.0011994877549712513
@@ -73,8 +63,6 @@ joint_positions:
   - -0.0014040185266894767
   - -1.419356204039759
   - 1.5704369332057904
-
-
 
   bite_transfer:
   - -0.5660415738908915
@@ -112,7 +100,6 @@ joint_positions:
   - -0.9145407036097888
   - -2.854664210376874
 
-
   intermediate:
   - 1.1344957054132863
   - 0.2620844958385992
@@ -121,15 +108,3 @@ joint_positions:
   - -6.072007285329306e-05
   - 0.9598771595848071
   - 1.5708497231747527
-
-
-  # - -0.08443179393543598
-  # - 0.007239350373905906
-  # - 3.1094301897371244
-  # - -2.1595235057994104
-  # - -0.729709334475019
-  # - 0.7404393436650031
-  # - 2.1534256658514557
-
-
-

@@ -165,6 +165,8 @@ class FoodDetectionServiceNode(Node):
         """Handle food acquired signal to end service"""
         if msg.data and self.service_active:
             self.get_logger().info('Received food acquired signal - ending food detection service')
+            # publish 0 food angle so robot doesn't twist
+            self.food_angle_pub.publish(Float64(data=0.0))
             self.service_active = False
             self.sam2_tracker.reset_tracking()
             if self.timer:

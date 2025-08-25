@@ -37,6 +37,16 @@ class MinimalOrchestrator(Node):
         self.servoing_on = False
         self.distance_from_target = self.config['feeding']['dist_from_food']
         
+        # Face detection configuration - check if enabled in config
+        self.face_detection_enabled = self.config['feeding'].get('face_detection', {}).get('enabled', False)
+        if self.face_detection_enabled:
+            self.face_gain_planar = self.config['feeding']['face_detection'].get('gain_planar', 0.35)
+            self.face_gain_depth = self.config['feeding']['face_detection'].get('gain_depth', 0.35)
+            self.face_target_distance = self.config['feeding']['face_detection'].get('target_distance', 0.04)
+            self.get_logger().info(f'Face detection enabled with gains: planar={self.face_gain_planar}, depth={self.face_gain_depth}, target={self.face_target_distance}m')
+        else:
+            self.get_logger().info('Face detection disabled - will use preset positions')
+        
         # Subscribers for food detection outputs
         self.grip_value_sub = self.create_subscription(
             Float64, '/grip_value', self.grip_value_callback, 1)
@@ -48,7 +58,13 @@ class MinimalOrchestrator(Node):
             Vector3, '/position_vector', self.position_vector_callback, 1)
         self.detection_ready_sub = self.create_subscription(
             Bool, '/detection_ready', self.detection_ready_callback, 1)
+        
+        # Subscribe to face servoing completion signal
+        self.face_servoing_complete_sub = self.create_subscription(
+            Bool, '/face_servoing_complete', self.face_servoing_complete_callback, 1)
+        
         self.detection_ready = False
+        self.face_servoing_complete = False
         
         self.latest_food_height = None
         self.latest_position_magnitude = 0.0
@@ -59,14 +75,18 @@ class MinimalOrchestrator(Node):
         
         # Service clients for detection services
         self.food_service_client = self.create_client(StartFaceServoing, 'start_food_servoing')
-        self.face_service_client = self.create_client(StartFaceServoing, 'start_face_servoing')
+        if self.face_detection_enabled:
+            self.face_service_client = self.create_client(StartFaceServoing, 'start_face_servoing')
         self.get_pose_client = self.create_client(GetPose, '/my_gen3/get_pose')
         
         # Wait for services
         while not self.food_service_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for food servoing service...')
-        while not self.face_service_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for face servoing service...')
+        
+        if self.face_detection_enabled:
+            while not self.face_service_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info('Waiting for face servoing service...')
+        
         while not self.get_pose_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn('Waiting for get pose service at /my_gen3/get_pose...')
             self.get_logger().info('Make sure the kortex controller (controller.cpp) is running!')
@@ -92,6 +112,12 @@ class MinimalOrchestrator(Node):
         if msg.data:
             self.detection_ready = True
             self.get_logger().info("Food detection and tracking is ready!")
+
+    def face_servoing_complete_callback(self, msg):
+        """Handle face servoing completion signal"""
+        if msg.data:
+            self.face_servoing_complete = True
+            self.get_logger().info("Face servoing completed!")
     
     def servoing_on_callback(self, msg):
         """Track servoing state (for monitoring only)"""
@@ -107,7 +133,7 @@ class MinimalOrchestrator(Node):
         
         start_time = time.time()
         stable_count = 0
-        required_stable_count = 10  # Need 10 consecutive small distances
+        required_stable_count = 5  # Need 5 consecutive small distances
         
         while rclpy.ok():
             if time.time() - start_time > timeout:
@@ -192,24 +218,52 @@ class MinimalOrchestrator(Node):
     
     async def call_face_detection_service(self):
         """Call face detection service and wait for completion"""
+        if not self.face_detection_enabled:
+            self.get_logger().error("Face detection service called but face detection is disabled!")
+            return False
+            
         self.get_logger().info("Starting face detection servoing...")
         
+        # Reset completion flag
+        self.face_servoing_complete = False
+        
         request = StartFaceServoing.Request()
-        request.gain_planar = 0.35
-        request.gain_depth = 0.35
-        request.target_distance = 0.04  # 4cm
+        request.gain_planar = self.face_gain_planar
+        request.gain_depth = self.face_gain_depth
+        request.target_distance = self.face_target_distance
         
         try:
+            self.get_logger().info("Calling face detection service...")
+            
+            # Start the service (non-blocking)
             response = await self.face_service_client.call_async(request)
             if not response.success:
-                self.get_logger().error(f"Face detection service failed: {response.message}")
+                self.get_logger().error(f"Face detection service failed to start: {response.message}")
                 return False
             
-            self.get_logger().info("Face detection service completed")
-            return True
+            self.get_logger().info("Face detection service started, waiting for completion...")
+            
+            # Wait for face servoing to complete (like we do for food_acquired)
+            start_time = time.time()
+            timeout = 60.0  # 1 minute timeout
+            
+            while not self.face_servoing_complete and rclpy.ok():
+                if time.time() - start_time > timeout:
+                    self.get_logger().warn("Face servoing timed out after 60 seconds")
+                    return False
+                
+                await asyncio.sleep(0.1)
+                rclpy.spin_once(self, timeout_sec=0)
+            
+            if self.face_servoing_complete:
+                self.get_logger().info("Face detection service completed successfully")
+                return True
+            else:
+                self.get_logger().error("Face detection service did not complete properly")
+                return False
             
         except Exception as e:
-            self.get_logger().error(f"Face detection service failed: {e}")
+            self.get_logger().error(f"Face detection service failed with exception: {e}")
             return False
     
     def wait_for_food_pickup(self):
@@ -268,13 +322,11 @@ class MinimalOrchestrator(Node):
                 self.get_logger().error("Failed to reach food - timeout")
                 # Stop servoing before continuing to next attempt
                 self.servoing_on_pub.publish(Bool(data=False))
-                # await asyncio.sleep(0.5)
                 continue
             
             # Stop servoing once we're close
             self.get_logger().info("Reached target, stopping servoing for pickup...")
             self.servoing_on_pub.publish(Bool(data=False))
-            # await asyncio.sleep(0.5)  # Let robot settle
 
             # Now do the pickup sequence
             self.get_logger().info("Attempting food pickup...")
@@ -290,8 +342,6 @@ class MinimalOrchestrator(Node):
             if not await self.robot_controller.set_gripper(grip_value):
                 self.get_logger().error("Failed to set gripper for pickup!")
                 continue
-            
-            # await asyncio.sleep(0.5)
 
             # Get current pose and move down
             self.get_logger().info("Getting current pose for pickup movement...")
@@ -324,21 +374,7 @@ class MinimalOrchestrator(Node):
             else:
                 self.get_logger().info("Successfully closed gripper more")
 
-            # Move up
-            # if pickup_pose:
-            #     up_pose = copy.deepcopy(pickup_pose)
-            #     up_pose.position.z += 0.1  # Move up 10cm
-            #     self.get_logger().info(f"Moving up 10cm from original z")
-            #     if not await self.robot_controller.move_to_pose(up_pose):
-            #         self.get_logger().error("Failed to move up!")
-            #         continue
-            #     else:
-            #         self.get_logger().info("Successfully moved up after pickup")
-            # else:
-            #     self.get_logger().error("Cannot move up - no reference pose available")
-            #     continue
-
-            # instead of just moving up, move back to overlook so we dont lose the segmentation
+            # Move back to overlook so we dont lose the segmentation
             self.get_logger().info("Moving back to overlook position after pickup...")
             if not await self.robot_controller.reset():
                 self.get_logger().error("Failed to move back to overlook!")
@@ -360,7 +396,6 @@ class MinimalOrchestrator(Node):
                     # Explicitly stop servoing and wait before retry
                     self.get_logger().info("Ensuring servoing is stopped before retry...")
                     self.servoing_on_pub.publish(Bool(data=False))
-                    # await asyncio.sleep(1.0)  # Wait for system to settle
 
         # All attempts failed
         self.get_logger().error(f"Failed to acquire food after {max_retries} attempts")
@@ -368,8 +403,34 @@ class MinimalOrchestrator(Node):
         self.food_acquired_pub.publish(Bool(data=True))
         return False
     
+    async def move_food_to_mouth(self):
+        """Move food to mouth using face detection or preset positions"""
+        if self.face_detection_enabled:
+            self.get_logger().info("Using face detection to move food to mouth...")
+            
+            # Call face detection service - it handles the servoing internally
+            success = await self.call_face_detection_service()
+            
+            if success:
+                self.get_logger().info("Face detection servoing completed successfully!")
+                return True
+            else:
+                self.get_logger().warn("Face detection failed, falling back to preset position")
+                # Fall back to preset bite transfer position
+                if not await self.robot_controller.move_to_bite_transfer():
+                    self.get_logger().error("Failed to move to preset bite transfer position!")
+                    return False
+                return True
+        else:
+            # Use preset bite transfer position
+            self.get_logger().info("Moving to preset bite transfer position...")
+            if not await self.robot_controller.move_to_bite_transfer():
+                self.get_logger().error("Failed to move to bite transfer position!")
+                return False
+            return True
+    
     async def run_feeding_cycle(self):
-        """Main feeding cycle with retry logic"""
+        """Main feeding cycle with retry logic and face detection integration"""
         cycle_count = 1
         
         while rclpy.ok():
@@ -379,6 +440,7 @@ class MinimalOrchestrator(Node):
                 # Reset state for new cycle
                 self.servoing_on_pub.publish(Bool(data=False))
                 self.food_acquired_pub.publish(Bool(data=False))
+                self.face_servoing_complete = False  # Reset face servoing flag
                 await asyncio.sleep(0.5)
                 
                 # Step 1: Move to overlook position and set gripper
@@ -410,19 +472,25 @@ class MinimalOrchestrator(Node):
                     self.get_logger().error("Failed to move to intermediate!")
                     continue
                 
-                # Step 5: Start face detection servoing
-                self.get_logger().info("Step 5: Starting face detection servoing...")
-                self.servoing_on_pub.publish(Bool(data=True))
-
-                if not await self.call_face_detection_service():
-                    self.get_logger().error("Face detection failed!")
+                # Step 5: Move food to mouth (face detection or preset)
+                self.get_logger().info("Step 5: Moving food to mouth...")
+                mouth_success = await self.move_food_to_mouth()
+                
+                if not mouth_success:
+                    self.get_logger().error("Failed to move food to mouth!")
                     continue
                 
                 # Step 6: Wait for food removal
-                self.get_logger().info("Step 6: Waiting for food removal...")
+                self.get_logger().info("Step 6: Waiting for food to be removed...")
                 self.wait_for_food_removal()
                 
-                self.get_logger().info("Cycle completed successfully!")
+                # Step 7: Reset to overlook position after food removal
+                self.get_logger().info("Step 7: Food removed! Resetting to overlook position...")
+                if not await self.robot_controller.reset():
+                    self.get_logger().error("Failed to reset robot after food removal!")
+                    break
+                
+                self.get_logger().info(f"=== CYCLE {cycle_count} COMPLETED SUCCESSFULLY! ===")
                 cycle_count += 1
                 
             except KeyboardInterrupt:
