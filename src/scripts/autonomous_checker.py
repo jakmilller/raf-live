@@ -99,7 +99,7 @@ class AutonomousChecker(Node):
         final_depth = np.mean(depths) if depths else None
         
         # If depth is outside the pickup range, object is likely removed
-        if final_depth > 0.20:
+        if final_depth is not None and final_depth>0.2:
             return True
         else:
             return False

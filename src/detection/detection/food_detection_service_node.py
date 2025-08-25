@@ -288,7 +288,7 @@ class FoodDetectionServiceNode(Node):
 
             # Publish segmented image
             self.image_viz.publish_segmented_image(vis_image)
-            self.image_viz.show_image(vis_image, 'Food Detection with Pose')
+            # self.image_viz.show_image(vis_image, 'Food Detection with Pose')
 
             # Convert to position vector
             position_vector = self.calculate_position_vector(centroid[0], centroid[1], mask_2d, self.distance_from_target)

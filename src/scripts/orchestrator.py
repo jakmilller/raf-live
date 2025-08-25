@@ -65,6 +65,7 @@ class MinimalOrchestrator(Node):
         
         self.detection_ready = False
         self.face_servoing_complete = False
+        self.servoing_off_time = None  # Track when servoing was turned off
         
         self.latest_food_height = None
         self.latest_position_magnitude = 0.0
@@ -117,15 +118,21 @@ class MinimalOrchestrator(Node):
         """Handle face servoing completion signal"""
         if msg.data:
             self.face_servoing_complete = True
-            self.get_logger().info("Face servoing completed!")
+            self.get_logger().info("Face servoing completed! (callback received)")
     
     def servoing_on_callback(self, msg):
         """Track servoing state (for monitoring only)"""
+        prev_servoing_on = self.servoing_on
         self.servoing_on = msg.data
-        if not self.servoing_on:
-            self.get_logger().debug("Servoing disabled")
-        else:
-            self.get_logger().debug("Servoing enabled")
+        
+        if not self.servoing_on and prev_servoing_on:
+            # Servoing just turned off
+            self.servoing_off_time = time.time()
+            self.get_logger().info("Servoing disabled - recording time")
+        elif self.servoing_on and not prev_servoing_on:
+            # Servoing just turned on
+            self.servoing_off_time = None
+            self.get_logger().info("Servoing enabled")
     
     async def wait_for_target_reached(self, timeout=30.0):
         """Wait for robot to reach close to the food (small position vector)"""
@@ -224,8 +231,10 @@ class MinimalOrchestrator(Node):
             
         self.get_logger().info("Starting face detection servoing...")
         
-        # Reset completion flag
+        # Reset completion flags
         self.face_servoing_complete = False
+        self.servoing_off_time = None
+        self._servoing_off_count = 0
         
         request = StartFaceServoing.Request()
         request.gain_planar = self.face_gain_planar
@@ -235,32 +244,69 @@ class MinimalOrchestrator(Node):
         try:
             self.get_logger().info("Calling face detection service...")
             
-            # Start the service (non-blocking)
-            response = await self.face_service_client.call_async(request)
+            # Call the service and wait for response
+            future = self.face_service_client.call_async(request)
+            
+            # Wait for the service call to complete
+            service_start_time = time.time()
+            service_timeout = 10.0  # 10 second timeout for service call
+            
+            while not future.done() and rclpy.ok():
+                if time.time() - service_start_time > service_timeout:
+                    self.get_logger().error("Face detection service call timed out")
+                    return False
+                
+                rclpy.spin_once(self, timeout_sec=0.1)
+                await asyncio.sleep(0.01)
+            
+            if not future.done():
+                self.get_logger().error("Face detection service call incomplete")
+                return False
+                
+            response = future.result()
             if not response.success:
                 self.get_logger().error(f"Face detection service failed to start: {response.message}")
                 return False
             
             self.get_logger().info("Face detection service started, waiting for completion...")
             
-            # Wait for face servoing to complete (like we do for food_acquired)
+            # Wait for face servoing to complete with multiple detection methods
             start_time = time.time()
             timeout = 60.0  # 1 minute timeout
             
-            while not self.face_servoing_complete and rclpy.ok():
-                if time.time() - start_time > timeout:
+            while rclpy.ok():
+                current_time = time.time()
+                
+                # Check timeout first
+                if current_time - start_time > timeout:
                     self.get_logger().warn("Face servoing timed out after 60 seconds")
                     return False
+                
+                # Method 1: Check if we received the completion callback
+                if self.face_servoing_complete:
+                    self.get_logger().info("Face detection service completed successfully (via callback)")
+                    return True
+                
+                # Method 2: Check if servoing has been off for 3+ seconds
+                if self.servoing_off_time is not None and (current_time - self.servoing_off_time) > 3.0:
+                    self.get_logger().info("Servoing has been off for 3+ seconds - assuming face servoing complete")
+                    return True
+                
+                # Method 3: Check if we're not servoing and haven't been for a bit
+                if not self.servoing_on:
+                    self._servoing_off_count += 1
+                    
+                    if self._servoing_off_count > 30:  # 3 seconds at 0.1s intervals
+                        self.get_logger().info("Servoing has been consistently off - face servoing complete")
+                        return True
+                else:
+                    self._servoing_off_count = 0
                 
                 await asyncio.sleep(0.1)
                 rclpy.spin_once(self, timeout_sec=0)
             
-            if self.face_servoing_complete:
-                self.get_logger().info("Face detection service completed successfully")
-                return True
-            else:
-                self.get_logger().error("Face detection service did not complete properly")
-                return False
+            self.get_logger().error("Face detection service did not complete properly")
+            return False
             
         except Exception as e:
             self.get_logger().error(f"Face detection service failed with exception: {e}")
@@ -441,6 +487,7 @@ class MinimalOrchestrator(Node):
                 self.servoing_on_pub.publish(Bool(data=False))
                 self.food_acquired_pub.publish(Bool(data=False))
                 self.face_servoing_complete = False  # Reset face servoing flag
+                self.servoing_off_time = None
                 await asyncio.sleep(0.5)
                 
                 # Step 1: Move to overlook position and set gripper
