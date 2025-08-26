@@ -4,7 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from geometry_msgs.msg import Vector3
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float64, String
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -94,6 +94,8 @@ class FoodDetectionNode(Node):
         self.food_height_pub = self.create_publisher(Float64, '/food_height', 1)
         self.segmented_image_pub = self.create_publisher(CompressedImage, '/segmented_image', 10)
         self.detection_ready_pub = self.create_publisher(Bool, '/food_detection_ready', 1)
+        self.currently_serving_pub = self.create_publisher(String, '/currently_serving', 10)
+        self.command_queue_pub = self.create_publisher(String, '/command_queue', 10)
         
         # Processing timer (only active when detection is on)
         self.timer = None

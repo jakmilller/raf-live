@@ -11,6 +11,7 @@ from collections import deque
 from dds_cloudapi_sdk import Config, Client
 from dds_cloudapi_sdk.tasks.v2_task import V2Task
 from .base_detector import BaseDetector
+from std_msgs.msg import String
 
 
 class DinoxDetector(BaseDetector):
@@ -54,8 +55,16 @@ class DinoxDetector(BaseDetector):
                     self._get_string_msg_type(), '/voice_commands', 
                     self.voice_command_callback, 10
                 )
-                if self.node:
-                    self.node.get_logger().info('Voice command subscription created')
+                self.currently_serving_pub = self.node.create_publisher(
+                    self._get_string_msg_type(), '/currently_serving', 10)
+                
+                self.voice_command_queue_pub = self.node.create_publisher(
+                    self._get_string_msg_type(), '/voice_command_queue', 10)
+                
+                self.node.get_logger().info('Voice command subscription created')
+
+            
+
     
     def _get_string_msg_type(self):
         """Get String message type (helper for ROS import)"""
@@ -84,17 +93,25 @@ class DinoxDetector(BaseDetector):
                 self.voice_command_queue.clear()
                 if self.node:
                     self.node.get_logger().info("Voice command queue cleared!")
+                    self.voice_command_queue_pub.publish(self.queue2string(self.voice_command_queue))
+                
             else:
                 # Add to queue (deque automatically handles maxlen=10)
                 self.voice_command_queue.append(command)
                 if self.node:
                     self.node.get_logger().info(f"Added voice command to queue: '{command}' "
                                                f"(Queue size: {len(self.voice_command_queue)})")
-    
+                    self.voice_command_queue_pub.publish(self.queue2string(self.voice_command_queue))
+
+        self.voice_command_queue_pub.publish(self.queue2string(self.voice_command_queue))
+        
+
     def get_voice_command(self):
         """Get the next command from queue or return None if empty"""
         if len(self.voice_command_queue) > 0:
             command = self.voice_command_queue.popleft()
+            self.voice_command_queue_pub.publish(self.queue2string(self.voice_command_queue))
+
             if self.node:
                 self.node.get_logger().info(f"Processing voice command: '{command}' "
                                            f"(Remaining in queue: {len(self.voice_command_queue)})")
@@ -190,6 +207,8 @@ class DinoxDetector(BaseDetector):
             
             # Parse item information
             self._parse_item_info(selected_item)
+
+            self.currently_serving_pub.publish(String(data=self.current_item))
             
             # Step 2: Create DINOX prompt
             text_prompt = self.current_item + " ."
@@ -323,3 +342,10 @@ class DinoxDetector(BaseDetector):
     def is_single_bite(self):
         """Check if current item is single bite"""
         return self.single_bite
+    
+    def queue2string(self, queue):
+        # Remove trailing numbers from each command before publishing
+        queue_str = ", ".join([cmd.rsplit(' ', 1)[0] if cmd.rsplit(' ', 1)[-1].isdigit() else cmd for cmd in queue])
+        queue_msg = String()
+        queue_msg.data = queue_str
+        return queue_msg

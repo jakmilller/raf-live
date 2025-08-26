@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Vector3, Pose
-from std_msgs.msg import Float64, Bool
+from std_msgs.msg import Float64, Bool, String
 import asyncio
 import sys
 import yaml
@@ -44,6 +44,7 @@ class SimplifiedOrchestrator(Node):
         self.latest_grip_value = None
         self.latest_food_height = None
         self.food_detection_ready = False
+        self.vector_pause = False
         
         # Subscribers - only the essential data
         self.position_vector_sub = self.create_subscription(
@@ -54,10 +55,13 @@ class SimplifiedOrchestrator(Node):
             Float64, '/food_height', self.food_height_callback, 1)
         self.food_detection_ready_sub = self.create_subscription(
             Bool, '/food_detection_ready', self.food_detection_ready_callback, 1)
+        self.vector_pause_sub = self.create_subscription(
+            Bool, '/vector_pause', self.vector_pause_callback, 1)
         
         # Publishers - simple control interface
         self.start_food_detection_pub = self.create_publisher(Bool, '/start_food_detection', 1)
         self.start_face_detection_pub = self.create_publisher(Bool, '/start_face_detection', 1)
+        self.robot_state_pub = self.create_publisher(String, '/robot_state', 1)
         self.servoing_on_pub = self.create_publisher(Bool, '/servoing_on', 1)
         self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 1)
         
@@ -81,6 +85,14 @@ class SimplifiedOrchestrator(Node):
         """Store latest food height"""
         self.latest_food_height = msg.data
     
+    def vector_pause_callback(self, msg):
+        """Handle vector pause signal"""
+        self.vector_pause = msg.data
+        if msg.data:
+            self.get_logger().info("Position vector updates paused")
+        else:
+            self.get_logger().info("Position vector updates resumed")
+
     def food_detection_ready_callback(self, msg):
         """Track when food detection is ready"""
         self.food_detection_ready = msg.data
@@ -113,7 +125,7 @@ class SimplifiedOrchestrator(Node):
         
         start_time = time.time()
         stable_count = 0
-        required_stable_count = 10  # Need 10 consecutive small distances (1 second at 10Hz)
+        required_stable_count = 5  
         
         while rclpy.ok():
             if time.time() - start_time > timeout:
@@ -127,7 +139,7 @@ class SimplifiedOrchestrator(Node):
                 self.latest_position_vector.z
             ])
             
-            if magnitude < threshold:
+            if magnitude < threshold and not self.vector_pause:
                 stable_count += 1
                 if stable_count >= required_stable_count:
                     self.get_logger().info(f"Position vector consistently small: {magnitude:.3f}m")
@@ -184,6 +196,8 @@ class SimplifiedOrchestrator(Node):
         """Attempt to acquire food with retry logic"""
         self.food_detection_ready = False
         for attempt in range(max_retries):
+            self.robot_state_pub.publish(String(data='Detecting food item...'))
+
             self.get_logger().info(f"=== Food acquisition attempt {attempt + 1}/{max_retries} ===")
             
             # Reset state
@@ -192,6 +206,7 @@ class SimplifiedOrchestrator(Node):
 
             if not await self.robot_controller.set_gripper(0.5):
                 self.get_logger().error("Failed to set gripper!")
+            asyncio.sleep(0.5)
             
             # Step 1: Start food detection
             self.get_logger().info("1. Starting food detection...")
@@ -210,6 +225,8 @@ class SimplifiedOrchestrator(Node):
             
             # Now start servoing
             self.get_logger().info("3. Starting servoing...")
+            self.robot_state_pub.publish(String(data='Moving to food item...'))
+
             self.servoing_on_pub.publish(Bool(data=True))
             
             # Step 3: Wait for robot to reach food
@@ -228,6 +245,8 @@ class SimplifiedOrchestrator(Node):
             await asyncio.sleep(0.5)
             
             # Step 5: Execute pickup sequence
+            self.robot_state_pub.publish(String(data='Executing pickup sequence'))
+
             if not await self.execute_pickup_sequence():
                 self.get_logger().warn(f"Pickup sequence failed on attempt {attempt + 1}")
                 # Keep detection running for retry
@@ -372,6 +391,7 @@ class SimplifiedOrchestrator(Node):
             
             try:
                 # Step 1: Move to overlook and open gripper
+                self.robot_state_pub.publish(String(data='Setting up robot...'))
                 self.get_logger().info("STEP 1: Moving to overlook and setting gripper...")
                 if not await self.robot_controller.reset():
                     self.get_logger().error("Failed to reset robot!")
@@ -388,18 +408,23 @@ class SimplifiedOrchestrator(Node):
                 
                 # Step 3: Move to intermediate position
                 self.get_logger().info("STEP 3: Moving to intermediate position...")
+                self.robot_state_pub.publish(String(data='Moving to face scan position'))
+
                 if not await self.robot_controller.move_to_intermediate():
                     self.get_logger().error("Failed to move to intermediate!")
                     continue
                 
                 # Step 4: Move food to mouth
                 self.get_logger().info("STEP 4: Moving food to mouth...")
+                self.robot_state_pub.publish(String(data='Moving towards mouth'))
+
                 if not await self.move_food_to_mouth():
                     self.get_logger().error("Failed to move food to mouth!")
                     continue
-                
+
                 # Step 5: Wait for food removal
                 self.get_logger().info("STEP 5: Waiting for food to be removed...")
+                self.robot_state_pub.publish(String(data='Waiting for food removal...'))
                 self.wait_for_food_removal()
                 
                 # Step 6: Reset to overlook position

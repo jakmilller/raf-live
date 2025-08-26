@@ -26,8 +26,8 @@ class ImageVisualizer:
         
         # Setup compressed image publisher if node provided
         if self.node:
-            self.segmented_image_pub = self.node.create_publisher(
-                CompressedImage, '/segmented_image', 10)
+            self.processed_image_pub = self.node.create_publisher(
+                CompressedImage, '/processed_image', 10)
     
     def save_debug_image(self, frame, detection_input, detection_type="gemini"):
         """
@@ -164,7 +164,7 @@ class ImageVisualizer:
         Args:
             vis_image: Visualization image to publish
         """
-        if not self.node or not hasattr(self, 'segmented_image_pub'):
+        if not self.node or not hasattr(self, 'processed_image_pub'):
             return
             
         try:
@@ -172,9 +172,9 @@ class ImageVisualizer:
             msg.header.stamp = self.node.get_clock().now().to_msg()
             msg.format = "jpeg"
             msg.data = np.array(cv2.imencode('.jpg', vis_image)[1]).tobytes()
-            self.segmented_image_pub.publish(msg)
+            self.processed_image_pub.publish(msg)
         except Exception as e:
-            self.node.get_logger().error(f"Failed to publish segmented image: {e}")
+            self.node.get_logger().error(f"Failed to publish processed image: {e}")
     
     def show_image(self, image, window_name='Food Detection'):
         """

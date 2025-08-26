@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from geometry_msgs.msg import Vector3
 from std_msgs.msg import Bool, Float64
 from cv_bridge import CvBridge
@@ -38,6 +38,7 @@ class FaceDetectionNode(Node):
         self.latest_color_image = None
         self.latest_depth_image = None
         self.camera_info = None
+        self.last_depth = 0.0
         
         # TF2 for coordinate transformations
         self.tf_buffer = tf2_ros.Buffer()
@@ -82,12 +83,20 @@ class FaceDetectionNode(Node):
         
         # Publishers
         self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 1)
-        self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 1)  # Always 0 for face
+        self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 1)  # Always 0 for face detection
+
+        # the orchestrator detects when the magnitude of the vector is really low, but doesnt differentiate between a zero vector because its close or a zero vector because the detection stopped
+        # this will help the orchestrator so that it doesnt mistake the zero vector when mouth isnt detected as being close to the food
+        self.vector_pause_pub = self.create_publisher(Bool, '/vector_pause', 1)
+        
+        # Add processed image publisher like in image_visualizer.py
+        self.processed_image_pub = self.create_publisher(
+            CompressedImage, '/processed_image', 10)
         
         # Processing timer (only active when detection is on)
         self.timer = None
         
-        self.get_logger().info('Simple Face Detection Node initialized and ready!')
+        self.get_logger().info('Face Detection Node initialized and ready!')
     
     def camera_info_callback(self, msg):
         """Update camera intrinsic parameters"""
@@ -110,6 +119,7 @@ class FaceDetectionNode(Node):
         if msg.data and not self.detection_active:
             self.get_logger().info("Starting face detection")
             self.detection_active = True
+            self.last_depth = 0.0
             
             # Start processing timer
             if self.timer:
@@ -214,6 +224,78 @@ class FaceDetectionNode(Node):
         
         return vector
     
+    def draw_mouth_landmarks_on_image(self, rgb_image, detection_result):
+        """Draw mouth landmarks and determine mouth openness - copied from unlabeled script"""
+        face_landmarks_list = detection_result.face_landmarks
+        annotated_image = np.copy(rgb_image)
+
+        # Loop through the detected faces
+        for idx in range(len(face_landmarks_list)):
+            face_landmarks = face_landmarks_list[idx]
+
+            # Draw the mouth landmarks
+            face_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+            face_landmarks_proto.landmark.extend([
+                landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+                for landmark in face_landmarks
+            ])
+
+            solutions.drawing_utils.draw_landmarks(
+                image=annotated_image,
+                landmark_list=face_landmarks_proto,
+                connections=mp.solutions.face_mesh.FACEMESH_LIPS,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=mp.solutions.drawing_styles.get_default_face_mesh_contours_style()
+            )
+
+            # Calculate mouth center and openness
+            upper_lip = face_landmarks[13]
+            lower_lip = face_landmarks[14]
+            mouth_center_x = (upper_lip.x + lower_lip.x) / 2
+            mouth_center_y = (upper_lip.y + lower_lip.y) / 2
+
+            # Calculate distance between upper and lower lip
+            mouth_open_distance = np.sqrt((upper_lip.x - lower_lip.x)**2 + (upper_lip.y - lower_lip.y)**2)
+
+            # Get image dimensions
+            image_height, image_width, _ = annotated_image.shape
+            center_x = int(mouth_center_x * image_width)
+            center_y = int(mouth_center_y * image_height)
+
+            # Threshold to determine if the mouth is open
+            if mouth_open_distance > 0.03:
+                cv2.circle(annotated_image, (center_x, center_y), radius=5, color=(0, 255, 0), thickness=-1)
+                mouth_status = "OPEN"
+            else:
+                cv2.circle(annotated_image, (center_x, center_y), radius=5, color=(0, 0, 255), thickness=-1)
+                mouth_status = "CLOSED"
+            
+            # Add status text
+            cv2.putText(annotated_image, f"Mouth: {mouth_status}", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(annotated_image, f"Distance: {mouth_open_distance:.3f}", 
+                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            return annotated_image, center_x, center_y
+
+        return annotated_image, None, None
+    
+    def publish_processed_image(self, vis_image):
+        """
+        Publish processed image as compressed image message - copied from image_visualizer.py
+        
+        Args:
+            vis_image: Visualization image to publish
+        """
+        try:
+            msg = CompressedImage()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.format = "jpeg"
+            msg.data = np.array(cv2.imencode('.jpg', vis_image)[1]).tobytes()
+            self.processed_image_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Failed to publish processed image: {e}")
+    
     def process_frame(self):
         """Process the latest frame for face detection"""
         if not self.detection_active or self.detector is None:
@@ -236,23 +318,34 @@ class FaceDetectionNode(Node):
             
             if not detection_result.face_landmarks:
                 self._publish_zero_vector()
+                self.get_logger().warn("No face detected, publishing zero vector")
+                self.vector_pause_pub.publish(Bool(data=True))  # Indicate pause due to no detection
+                # Still publish the image even if no face is detected
+                bgr_image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                cv2.putText(bgr_image, "No face detected", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                self.publish_processed_image(bgr_image)
+                return
+            else:
+                self.vector_pause_pub.publish(Bool(data=False))
+            
+            # Draw mouth landmarks and get mouth center - using the same function as unlabeled script
+            annotated_image, center_x, center_y = self.draw_mouth_landmarks_on_image(rgb_frame, detection_result)
+            
+            if center_x is None or center_y is None:
+                self._publish_zero_vector()
+                # Convert back to BGR for publishing
+                bgr_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+                self.publish_processed_image(bgr_image)
                 return
             
-            # Get mouth center from landmarks
-            face_landmarks = detection_result.face_landmarks[0]
-            upper_lip = face_landmarks[13]
-            lower_lip = face_landmarks[14]
-            mouth_center_x = (upper_lip.x + lower_lip.x) / 2
-            mouth_center_y = (upper_lip.y + lower_lip.y) / 2
-            
-            # Get image dimensions
-            image_height, image_width, _ = cv_image.shape
-            center_x = int(mouth_center_x * image_width)
-            center_y = int(mouth_center_y * image_height)
-            
             # Get all lip landmarks for depth averaging
+            face_landmarks = detection_result.face_landmarks[0]
             lip_indices = [13,312,311,310,318,402,317,14,87,178,88,80,81,82,40,39,37,0,267,269,270,321,405,314,17,84,181,91]
             lip_points = [face_landmarks[i] for i in lip_indices]
+            
+            # Get image dimensions for pixel conversion
+            image_height, image_width, _ = cv_image.shape
             
             # Collect depth values at each lip landmark pixel
             lip_depths = []
@@ -260,6 +353,7 @@ class FaceDetectionNode(Node):
                 pixel_x = int(landmark.x * image_width)
                 pixel_y = int(landmark.y * image_height)
                 depth = self.get_depth_at_pixel(pixel_x, pixel_y)
+
                 if depth > 0.22 and depth is not None:  # filter out readings of food on the gripper or invalid readings
                     lip_depths.append(depth)
             
@@ -267,14 +361,42 @@ class FaceDetectionNode(Node):
             if not lip_depths:
                 self.get_logger().warn("No valid mouth depth readings found.")
                 self._publish_zero_vector()
+                # Convert back to BGR for publishing
+                bgr_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+                cv2.putText(bgr_image, "No valid depth", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                self.publish_processed_image(bgr_image)
                 return
                 
+            # SAFETY FEATURES
+            # make sure it doesn't go out of realistic bounds
             average_lip_depth = sum(lip_depths) / len(lip_depths)
+            if average_lip_depth < 0.22:
+                average_lip_depth = 0.22
+                self.get_logger().warn("Average lip depth too close, setting to minimum 0.22m")
+            elif average_lip_depth > 0.75:
+                average_lip_depth = 0.75
+                self.get_logger().warn("Average lip depth too far, setting to maximum 0.75m")
+
+            if average_lip_depth > self.last_depth and self.last_depth != 0:
+                average_lip_depth = self.last_depth
+                self.get_logger().warn("Face detected further away, using last valid depth")
+
+            self.last_depth = average_lip_depth
+            
+            # Add depth info to the annotated image
+            cv2.putText(annotated_image, f"Depth: {average_lip_depth:.3f}m", 
+                       (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # Calculate position vector using the helper method
             vector = self.calculate_mouth_position_vector(center_x, center_y, average_lip_depth)
             if vector is None:
                 self._publish_zero_vector()
+                # Convert back to BGR for publishing
+                bgr_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+                cv2.putText(bgr_image, "Transform failed", (10, 120), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                self.publish_processed_image(bgr_image)
                 return
             
             # Check if we're close enough (within target distance)
@@ -282,11 +404,22 @@ class FaceDetectionNode(Node):
             if distance < self.target_distance:
                 self.get_logger().info(f"Robot is within {self.target_distance}m of mouth, publishing zero vector")
                 self._publish_zero_vector()
-                return
+                # Add "TARGET REACHED" text to image
+                cv2.putText(annotated_image, "TARGET REACHED", (10, 120), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            else:
+                # Publish the position vector and zero food angle (no orientation control)
+                self.position_vector_pub.publish(vector)
+                self.food_angle_pub.publish(Float64(data=0.0))  # Always 0 for face detection
+                # Add vector info to image
+                cv2.putText(annotated_image, f"Vector: [{vector.x:.3f}, {vector.y:.3f}, {vector.z:.3f}]", 
+                           (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(annotated_image, f"Distance: {distance:.3f}m", 
+                           (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            # Publish the position vector and zero food angle (no orientation control)
-            self.position_vector_pub.publish(vector)
-            self.food_angle_pub.publish(Float64(data=0.0))  # Always 0 for face detection
+            # Convert back to BGR for publishing (OpenCV uses BGR, but we've been working in RGB)
+            bgr_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+            self.publish_processed_image(bgr_image)
                 
         except Exception as e:
             self.get_logger().error(f"Error in mouth detection: {str(e)}")
