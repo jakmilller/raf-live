@@ -7,3 +7,4 @@ SAM2_streaming/
 src/kortex_controller/kortex_api/
 __pycache__/
 face_landmarker_v2_with_blendshapes.task
+.claude

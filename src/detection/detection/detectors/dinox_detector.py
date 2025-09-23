@@ -138,22 +138,24 @@ class DinoxDetector(BaseDetector):
             voice_command = self.get_voice_command()
             
             if voice_command:
-                # Use voice command
+                # Use voice command and parse it properly
                 if self.node:
                     self.node.get_logger().info(f"Using voice command: '{voice_command}'")
                 
-                # Parse voice command for bite information
+                # Parse voice command for bite information - THIS IS THE CORRECT PARSING
                 parts = voice_command.rsplit(' ', 1)
                 if len(parts) == 2 and parts[1].isdigit():
                     item_name = parts[0]
                     bite_number = int(parts[1])
+                    self.single_bite = bite_number <= 1  # 1 = single bite, 2+ = multi bite
+                    self.current_item = item_name
                 else:
                     item_name = voice_command
                     bite_number = 1  # Default to single bite
+                    self.single_bite = True
+                    self.current_item = item_name
                 
-                # Set single/multi bite based on voice command
-                self.single_bite = bite_number <= 1
-                selected_item = item_name
+                selected_item = item_name  # Use just the item name for DINOX
                 
             else:
                 # Fall back to ChatGPT identification
@@ -176,42 +178,49 @@ class DinoxDetector(BaseDetector):
                     if self.node:
                         self.node.get_logger().info(f"ChatGPT overwritten with voice command: '{interrupt_command}'")
                     
-                    # Parse interrupt command
+                    # Parse interrupt command the same way
                     parts = interrupt_command.rsplit(' ', 1)
                     if len(parts) == 2 and parts[1].isdigit():
                         item_name = parts[0]
                         bite_number = int(parts[1])
+                        self.single_bite = bite_number <= 1
+                        self.current_item = item_name
                     else:
                         item_name = interrupt_command
                         bite_number = 1
+                        self.single_bite = True
+                        self.current_item = item_name
                     
-                    self.single_bite = bite_number <= 1
                     selected_item = item_name
                 else:
-                    # Use ChatGPT result
-                    selected_item = random.choice(identified_objects)
+                    # Use ChatGPT result and parse it properly
+                    selected_chatgpt_item = random.choice(identified_objects)
                     if self.node:
-                        self.node.get_logger().info(f"Randomly selected: {selected_item}")
+                        self.node.get_logger().info(f"Randomly selected: {selected_chatgpt_item}")
                     
-                    parts = selected_item.rsplit(' ', 1)
+                    # Parse ChatGPT result the same way as voice commands
+                    parts = selected_chatgpt_item.rsplit(' ', 1)
                     if len(parts) == 2 and parts[1].isdigit():
                         item_name = parts[0]
                         bite_number = int(parts[1])
+                        self.single_bite = bite_number <= 1
+                        self.current_item = item_name
                     else:
-                        item_name = selected_item
+                        item_name = selected_chatgpt_item
                         bite_number = 1
+                        self.single_bite = True
+                        self.current_item = item_name
                     
-                    # Handle single/multi bite capabilities
-                    self.single_bite = bite_number <= 1
                     selected_item = item_name
-            
-            # Parse item information
-            self._parse_item_info(selected_item)
+
+            # Log the final parsing result for debugging
+            if self.node:
+                self.node.get_logger().info(f"Final parsing: item='{self.current_item}', single_bite={self.single_bite}")
 
             self.currently_serving_pub.publish(String(data=self.current_item))
             
-            # Step 2: Create DINOX prompt
-            text_prompt = self.current_item + " ."
+            # Step 2: Create DINOX prompt using just the item name (no number)
+            text_prompt = selected_item + " ."
             
             # Step 3: Detect with DINOX
             if self.node:
@@ -321,19 +330,6 @@ class DinoxDetector(BaseDetector):
             if self.node:
                 self.node.get_logger().error(f"DINOX detection failed: {e}")
             return None, None, None, None
-    
-    def _parse_item_info(self, selected_item):
-        """Parse bite information from selected item"""
-        parts = selected_item.rsplit(' ', 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            self.current_item = parts[0]
-            bite_number = int(parts[1])
-        else:
-            self.current_item = selected_item
-            bite_number = 1
-        
-        # Set single/multi bite based on number
-        self.single_bite = bite_number <= 1
     
     def get_current_item(self):
         """Get the current detected food item name"""

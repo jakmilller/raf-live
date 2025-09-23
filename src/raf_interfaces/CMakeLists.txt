@@ -16,6 +16,7 @@ find_package(trajectory_msgs REQUIRED)
 # Specify the message files
 set(msg_files
   "msg/DetectedFood.msg"
+  "msg/ForceFeedback.msg"
 )
 
 # Specify the service files

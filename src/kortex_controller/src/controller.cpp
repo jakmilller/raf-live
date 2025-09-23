@@ -116,6 +116,7 @@ Controller::Controller() : Node("controller")
     // Initialize ROS2 publishers
     mJointStatePub = this->create_publisher<sensor_msgs::msg::JointState>("/my_gen3/robot_joint_states", 10);
     mCartesianStatePub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/my_gen3/robot_cartesian_state", 10);
+    mForceFeedbackPub = this->create_publisher<raf_interfaces::msg::ForceFeedback>("/my_gen3/force_feedback", 10);
     
     // Initialize ROS2 subscribers
     mTareFTSensorSub = this->create_subscription<std_msgs::msg::Bool>(
@@ -139,6 +140,8 @@ Controller::Controller() : Node("controller")
         "/my_gen3/set_twist", std::bind(&Controller::setTwist, this, _1, _2));
     mGetPoseService = this->create_service<raf_interfaces::srv::GetPose>(
         "/my_gen3/get_pose", std::bind(&Controller::getPose, this, _1, _2));
+    mResetSafetyService = this->create_service<std_srvs::srv::Empty>(
+        "/my_gen3/reset_safety", std::bind(&Controller::resetSafety, this, _1, _2));
     RCLCPP_INFO(this->get_logger(), "Services created");
 
     // Initialize force/torque sensor variables
@@ -334,6 +337,74 @@ void Controller::publishState()
             RCLCPP_INFO(this->get_logger(), "Ty: %f", mFTSensorValues[4] - mZeroFTSensorValues[4]);
             RCLCPP_INFO(this->get_logger(), "Tz: %f", mFTSensorValues[5] - mZeroFTSensorValues[5]);
         }
+
+
+        // Calculate total force magnitude and check consecutive threshold
+        if (!mSafetyLocked.load()) {
+            double force_x = mFTSensorValues[0] - mZeroFTSensorValues[0];
+            double force_y = mFTSensorValues[1] - mZeroFTSensorValues[1];
+            double force_z = mFTSensorValues[2] - mZeroFTSensorValues[2];
+            double total_force_magnitude = std::sqrt(force_x * force_x + force_y * force_y + force_z * force_z);
+            
+            if (total_force_magnitude > TOTAL_FORCE_THRESHOLD) {
+                mConsecutiveForceExceeds++;
+                RCLCPP_WARN(this->get_logger(), "Total force magnitude (%.2f N) exceeds 12N threshold. Count: %d/5", 
+                    total_force_magnitude, mConsecutiveForceExceeds);
+                
+                if (mConsecutiveForceExceeds >= CONSECUTIVE_LIMIT) {
+                    RCLCPP_ERROR(this->get_logger(), "EMERGENCY STOP: Total force magnitude (%.2f N) exceeded 12N threshold %d times consecutively!", 
+                        total_force_magnitude, CONSECUTIVE_LIMIT);
+                    RCLCPP_ERROR(this->get_logger(), "Stopping robot and entering safety lock mode...");
+                    
+                    mSafetyLocked.store(true);
+                    mConsecutiveForceExceeds = 0;
+                    
+                    try {
+                        mBase->Stop();
+                        RCLCPP_ERROR(this->get_logger(), "Robot stopped due to consecutive total force threshold violations");
+                        RCLCPP_ERROR(this->get_logger(), "Safety lock engaged. Use 'ros2 service call /my_gen3/reset_safety std_srvs/srv/Empty' to reset");
+                    } catch (k_api::KDetailedException& ex) {
+                        RCLCPP_ERROR(this->get_logger(), "Failed to stop robot: %s", ex.what());
+                    }
+                    
+                    return;
+                }
+            } else {
+                mConsecutiveForceExceeds = 0;
+            }
+        }
+
+        RCLCPP_DEBUG(this->get_logger(), "Publishing force feedback...");
+        auto force_feedback_msg = raf_interfaces::msg::ForceFeedback();
+        
+        // Force data (tare-compensated) - All forces in tool frame
+        force_feedback_msg.force.x = mFTSensorValues[0] - mZeroFTSensorValues[0];  // Tool frame X
+        force_feedback_msg.force.y = mFTSensorValues[1] - mZeroFTSensorValues[1];  // Tool frame Y
+        force_feedback_msg.force.z = mFTSensorValues[2] - mZeroFTSensorValues[2];  // Tool frame Z
+        force_feedback_msg.torque.x = mFTSensorValues[3] - mZeroFTSensorValues[3];
+        force_feedback_msg.torque.y = mFTSensorValues[4] - mZeroFTSensorValues[4];
+        force_feedback_msg.torque.z = mFTSensorValues[5] - mZeroFTSensorValues[5];
+        
+        // Add gripper data if available
+        if (mLastFeedback.has_interconnect() && 
+            mLastFeedback.interconnect().has_gripper_feedback() &&
+            mLastFeedback.interconnect().gripper_feedback().motor_size() > 0) {
+            // Gripper position (converted from percentage to radians)
+            force_feedback_msg.gripper_position = 0.8 * mLastFeedback.interconnect().gripper_feedback().motor()[0].position() / 100.0;
+            // Gripper velocity (converted from percentage to radians/sec)
+            force_feedback_msg.gripper_velocity = 0.8 * mLastFeedback.interconnect().gripper_feedback().motor()[0].velocity() / 100.0;
+            // Gripper effort (motor current)
+            force_feedback_msg.gripper_effort = mLastFeedback.interconnect().gripper_feedback().motor()[0].current_motor();
+            RCLCPP_DEBUG(this->get_logger(), "Gripper - pos: %f, vel: %f, effort: %f", 
+                force_feedback_msg.gripper_position, force_feedback_msg.gripper_velocity, force_feedback_msg.gripper_effort);
+        } else {
+            // Set to zero if no gripper feedback
+            force_feedback_msg.gripper_position = 0.0;
+            force_feedback_msg.gripper_velocity = 0.0;
+            force_feedback_msg.gripper_effort = 0.0;
+        }
+        
+        mForceFeedbackPub->publish(force_feedback_msg);
         
         RCLCPP_DEBUG(this->get_logger(), "publishState() completed successfully");
         
@@ -721,6 +792,14 @@ void Controller::setTwist(const std::shared_ptr<raf_interfaces::srv::SetTwist::R
 {
     RCLCPP_DEBUG(this->get_logger(), "Received set twist command");
 
+    // Check safety lock
+    if (mSafetyLocked.load()) {
+        RCLCPP_WARN(this->get_logger(), "Twist command blocked - robot is in safety lock mode");
+        response->success = false;
+        response->message = "Robot is in safety lock mode due to force threshold exceeded. Use reset_safety service to unlock.";
+        return;
+    }
+
     try
     {
         // For continuous control, we must be in SINGLE_LEVEL_SERVOING.
@@ -814,6 +893,19 @@ void Controller::getPose(const std::shared_ptr<raf_interfaces::srv::GetPose::Req
         RCLCPP_ERROR(this->get_logger(), "Kortex exception: %s", ex.what());
         response->success = false;
         response->message = "Failed to get pose";
+    }
+}
+
+void Controller::resetSafety(const std::shared_ptr<std_srvs::srv::Empty::Request> /* request */,
+                            std::shared_ptr<std_srvs::srv::Empty::Response> /* response */)
+{
+    if (mSafetyLocked.load()) {
+        mSafetyLocked.store(false);
+        RCLCPP_INFO(this->get_logger(), "Safety lock reset - robot control restored");
+        RCLCPP_INFO(this->get_logger(), "Current tool force Z: %.2f N", 
+            std::abs(mFTSensorValues[2] - mZeroFTSensorValues[2]));
+    } else {
+        RCLCPP_INFO(this->get_logger(), "Robot was not in safety lock mode");
     }
 }
 

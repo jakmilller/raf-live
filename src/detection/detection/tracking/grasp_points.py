@@ -251,7 +251,7 @@ class GraspAnalyzer:
 
             if not success1 or not success2 or rs_width_p1 is None or rs_width_p2 is None:
                 # if self.node:
-                #     self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
+                self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
                 grip_val = None
             else: 
                 # get true distances of points from each other (ignore depth for accuracy)
@@ -284,7 +284,7 @@ class GraspAnalyzer:
             return None, None, None, None
     
     def _get_food_angle_pca(self, mask):
-        """Calculate food angle using PCA"""
+        """Calculate food angle using PCA with circularity check"""
         ys, xs = np.where(mask > 0)
         points = np.column_stack((xs, ys))
 
@@ -299,9 +299,23 @@ class GraspAnalyzer:
         cov = np.cov(centered, rowvar=False)
         eigvals, eigvecs = np.linalg.eigh(cov)
 
-        # Choose the major axis (eigenvector with largest eigenvalue)
-        major_axis = eigvecs[:, np.argmax(eigvals)]
+        # Sort eigenvalues in descending order
+        idx = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
 
+        # Check if object is elongated enough to have a meaningful angle
+        # Ratio > threshold means object is elongated, < threshold means circular
+        eigenvalue_ratio = eigvals[0] / eigvals[1] if eigvals[1] > 0 else float('inf')
+        elongation_threshold = 1.3
+        
+        if eigenvalue_ratio < elongation_threshold:
+            if self.node:
+                self.node.get_logger().info(f"Food appears circular (ratio: {eigenvalue_ratio:.2f}), using 0° angle")
+            return 0.0
+
+        # Object is elongated, calculate angle from major axis
+        major_axis = eigvecs[:, 0]
         angle = np.degrees(np.arctan2(major_axis[1], major_axis[0]))
 
         # wrap angle to correct range for servoing
@@ -310,6 +324,9 @@ class GraspAnalyzer:
 
         # make vertical 0 degrees
         angle -= 90
+
+        # if self.node:
+        #     self.node.get_logger().info(f"Food angle: {angle:.1f}° (elongation ratio: {eigenvalue_ratio:.2f})")
 
         return angle
     

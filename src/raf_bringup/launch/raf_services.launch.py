@@ -32,9 +32,17 @@ def generate_launch_description():
         output='screen'
     )
 
+    # emergency stop monitor
+    estop_monitor_node = Node(
+        executable='/home/mcrr-lab/raf-live/src/scripts/estop_monitor.py',
+        name='estop_monitor',
+        output='screen'
+    )
+
     return LaunchDescription([
         food_detection_service_node,
         face_detection_service_node,
         voice_node,
-        servoing_node
+        servoing_node,
+        estop_monitor_node
     ])

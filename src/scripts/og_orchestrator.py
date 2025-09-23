@@ -11,7 +11,6 @@ import time
 import copy
 import numpy as np
 import os
-import pygame
 
 # Import controllers/checkers
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -39,24 +38,15 @@ class SimplifiedOrchestrator(Node):
         self.distance_from_target = self.config['feeding']['dist_from_food']
         self.grip_close_amount = self.config['feeding']['grip_close']
         self.face_detection_enabled = self.config['feeding'].get('face_detection', {}).get('enabled', False)
-
-        # audio setup
-        pygame.mixer.init()
-        self.power_on = self.config['feeding']['power_on']
-        self.power_off = self.config['feeding']['power_off']
-        self.snap = self.config['feeding']['snap']
-        self.play_sound(self.power_on)
         
-        # variables
+        # State variables - only what we actually need
         self.latest_position_vector = Vector3()
         self.latest_grip_value = None
         self.latest_food_height = None
-        self.latest_food_depth = None
         self.food_detection_ready = False
         self.vector_pause = False
-        self.tracking_lost = False  
-
-        # Subscribers
+        
+        # Subscribers - only the essential data
         self.position_vector_sub = self.create_subscription(
             Vector3, '/position_vector', self.position_vector_callback, 1)
         self.grip_value_sub = self.create_subscription(
@@ -67,12 +57,6 @@ class SimplifiedOrchestrator(Node):
             Bool, '/food_detection_ready', self.food_detection_ready_callback, 1)
         self.vector_pause_sub = self.create_subscription(
             Bool, '/vector_pause', self.vector_pause_callback, 1)
-        self.food_item_sub = self.create_subscription(String, '/currently_serving', self.food_item_callback,1)
-        
-        self.tracking_lost_sub = self.create_subscription(
-            Bool, '/tracking_lost', self.tracking_lost_callback, 1)
-        self.food_depth_sub = self.create_subscription(
-            Float64, '/food_depth', self.food_depth_callback, 1)
         
         # Publishers - simple control interface
         self.start_food_detection_pub = self.create_publisher(Bool, '/start_food_detection', 1)
@@ -80,7 +64,6 @@ class SimplifiedOrchestrator(Node):
         self.robot_state_pub = self.create_publisher(String, '/robot_state', 1)
         self.servoing_on_pub = self.create_publisher(Bool, '/servoing_on', 1)
         self.twist_gains_pub = self.create_publisher(Vector3, '/twist_gains', 1)
-        self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 1)
         
         # Service client for getting current pose
         self.get_pose_client = self.create_client(GetPose, '/my_gen3/get_pose')
@@ -101,18 +84,6 @@ class SimplifiedOrchestrator(Node):
     def food_height_callback(self, msg):
         """Store latest food height"""
         self.latest_food_height = msg.data
-
-    def food_item_callback(self, msg):
-        """Adjust close values (how tightly to close gripper) based on food item"""
-        if msg.data == "carrot":
-            self.grip_close_amount = 0.075
-            self.get_logger().info("Adjusting close value!")
-        elif msg.data == "chicken nugget" or msg.data == "cut grilled chicken":
-            self.grip_close_amount = 0.065
-            self.get_logger().info("Adjusting close value!")
-        else:
-            self.grip_close_amount = self.config['feeding']['grip_close']
-
     
     def vector_pause_callback(self, msg):
         """Handle vector pause signal"""
@@ -128,17 +99,6 @@ class SimplifiedOrchestrator(Node):
         if msg.data:
             self.get_logger().info("Food detection is ready - tracking initialized!")
     
-    # check if tracking was lost
-    def tracking_lost_callback(self, msg):
-        """Handle tracking lost signal"""
-        if msg.data:
-            self.tracking_lost = True
-            self.get_logger().error("🚨 TRACKING LOST - Will restart feeding cycle!")
-
-    def food_depth_callback(self, msg):
-        """Store latest food depth"""
-        self.latest_food_depth = msg.data
-    
     async def wait_for_food_detection_ready(self, timeout=30.0):
         """Wait for food detection to be ready (tracking initialized)"""
         self.get_logger().info("Waiting for food detection to be ready...")
@@ -146,11 +106,6 @@ class SimplifiedOrchestrator(Node):
         start_time = time.time()
         
         while rclpy.ok():
-            # Check if tracking was lost during waiting
-            if self.tracking_lost:
-                self.get_logger().error("Tracking lost while waiting for food detection ready")
-                return False
-            
             if time.time() - start_time > timeout:
                 self.get_logger().error(f"Timeout waiting for food detection ready after {timeout}s")
                 return False
@@ -164,20 +119,15 @@ class SimplifiedOrchestrator(Node):
         
         return False
     
-    async def wait_for_small_position_vector(self, threshold=0.004, timeout=30.0):
+    async def wait_for_small_position_vector(self, threshold=0.005, timeout=30.0):
         """Wait until position vector magnitude is small (robot reached target)"""
         self.get_logger().info(f"Waiting for position vector < {threshold}m...")
         
         start_time = time.time()
         stable_count = 0
-        required_stable_count = 8  
+        required_stable_count = 5  
         
         while rclpy.ok():
-            # Check if tracking was lost during servoing
-            if self.tracking_lost:
-                self.get_logger().error("Tracking lost during servoing!")
-                return False
-            
             if time.time() - start_time > timeout:
                 self.get_logger().warn(f"Timeout waiting for small position vector after {timeout}s")
                 return False
@@ -241,15 +191,6 @@ class SimplifiedOrchestrator(Node):
         except Exception as e:
             self.get_logger().error(f'Error calling get pose service: {e}')
             return None
-        
-    def play_sound(self, file_path):
-        pygame.mixer.init()
-        pygame.mixer.music.load(file_path)
-        pygame.mixer.music.play()
-
-        # Wait for the sound to finish
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.1)
     
     async def acquire_food_with_retries(self, max_retries=3):
         """Attempt to acquire food with retry logic"""
@@ -259,14 +200,13 @@ class SimplifiedOrchestrator(Node):
 
             self.get_logger().info(f"=== Food acquisition attempt {attempt + 1}/{max_retries} ===")
             
-            # reset tracking_lost flag for each attempt
+            # Reset state
             self.latest_grip_value = None
             self.latest_food_height = None
-            self.tracking_lost = False
 
             if not await self.robot_controller.set_gripper(0.5):
                 self.get_logger().error("Failed to set gripper!")
-            await asyncio.sleep(0.7)
+            asyncio.sleep(0.5)
             
             # Step 1: Start food detection
             self.get_logger().info("1. Starting food detection...")
@@ -274,20 +214,14 @@ class SimplifiedOrchestrator(Node):
             
             # Step 2: Set gains and start servoing
             self.get_logger().info("2. Setting gains and waiting for detection ready...")
-            gains = Vector3(x=0.5, y=0.5, z=0.5)
+            gains = Vector3(x=0.6, y=0.6, z=0.6)
             self.twist_gains_pub.publish(gains)
             
             # Wait for detection to be ready before starting servoing
-            if not await self.wait_for_food_detection_ready(timeout=40.0):
+            if not await self.wait_for_food_detection_ready(timeout=30.0):
                 self.get_logger().error("Food detection failed to initialize")
                 self.start_food_detection_pub.publish(Bool(data=False))
-                
-                # Check if failure was due to tracking loss
-                if self.tracking_lost:
-                    self.get_logger().error("Tracking lost during detection - restarting cycle completely")
-                    return False  # Return False to restart entire cycle
-                    
-                continue  # Try next attempt
+                continue
             
             # Now start servoing
             self.get_logger().info("3. Starting servoing...")
@@ -300,13 +234,6 @@ class SimplifiedOrchestrator(Node):
             success = await self.wait_for_small_position_vector(threshold=0.005, timeout=30.0)
             
             if not success:
-                # Check if failure was due to tracking loss
-                if self.tracking_lost:
-                    self.get_logger().error("Tracking lost during servoing - restarting cycle completely")
-                    self.servoing_on_pub.publish(Bool(data=False))
-                    self.start_food_detection_pub.publish(Bool(data=False))
-                    return False  # Return False to restart entire cycle
-                
                 self.get_logger().error("Failed to reach food - timeout")
                 self.servoing_on_pub.publish(Bool(data=False))
                 self.start_food_detection_pub.publish(Bool(data=False))
@@ -325,31 +252,20 @@ class SimplifiedOrchestrator(Node):
                 # Keep detection running for retry
                 continue
             
-            # Step 6: Check if food was picked up using food depth detection
-            self.get_logger().info("6. Checking if food was picked up using food depth detection...")
-            await asyncio.sleep(0.5)  # Let robot settle after moving to overlook
-            pickup_success = self.wait_for_food_pickup_from_segment_depth()
+            # Step 6: Check if food was picked up
+            self.get_logger().info("6. Checking if food was picked up...")
+            pickup_success = self.wait_for_food_pickup()
             
             if pickup_success:
                 self.get_logger().info("Food pickup successful!")
-                # Keep detection running for the second check after intermediate position
+                # Stop food detection now that we have the food
+                self.start_food_detection_pub.publish(Bool(data=False))
                 return True
             else:
                 self.get_logger().warn(f"Food pickup failed on attempt {attempt + 1}")
-                if self.tracking_lost:
-                    # If tracking was lost, we need to restart the entire cycle
-                    self.get_logger().error("Tracking lost during pickup - restarting cycle")
-                    self.start_food_detection_pub.publish(Bool(data=False))
-                    return False
-                    
                 if attempt < max_retries - 1:
                     # Restart servoing for next attempt (keep detection running)
                     self.get_logger().info("Restarting servoing for retry...")
-                    if not await self.robot_controller.set_gripper(0.5):
-                        self.get_logger().error("Failed to set gripper!")
-                    await asyncio.sleep(0.7)
-                    self.grip_close_amount += 0.005  # close slightly tighter for next attempt
-                    
                     self.servoing_on_pub.publish(Bool(data=True))
         
         # All attempts failed
@@ -368,10 +284,6 @@ class SimplifiedOrchestrator(Node):
             if self.latest_food_height is None:
                 self.get_logger().error("No food height available for pickup!")
                 return False
-            
-            if self.tracking_lost:
-                self.get_logger().error("Cannot execute pickup - tacking lost!")
-                return False            
             
             # Set gripper to food width
             self.get_logger().info(f"Setting gripper to food width: {self.latest_grip_value:.3f}")
@@ -400,7 +312,6 @@ class SimplifiedOrchestrator(Node):
                 self.get_logger().error("Failed to close gripper!")
                 return False
             
-            self.food_angle_pub.publish(Float64(data=0.0))  # Reset food angle
             # Move back to overlook
             self.get_logger().info("Moving back to overlook after pickup...")
             if not await self.robot_controller.reset():
@@ -423,20 +334,6 @@ class SimplifiedOrchestrator(Node):
             time.sleep(0.1)
         
         return self.autonomous_checker.check_object_grasped()
-
-    def wait_for_food_pickup_from_segment_depth(self):
-        """Check if food was picked up using autonomous checker with food depth"""
-        self.get_logger().info("Checking if food was picked up using food depth...")
-
-        # Spin both nodes to get latest food depth data
-        for _ in range(5):
-            rclpy.spin_once(self, timeout_sec=0.1)
-            rclpy.spin_once(self.autonomous_checker, timeout_sec=0.1)
-            time.sleep(0.1)
-
-        return self.autonomous_checker.is_object_grasped_from_food_depth(
-            self.autonomous_checker.latest_food_depth, depth_threshold=0.25)
-
     
     def wait_for_food_removal(self):
         """Wait for food to be removed from gripper"""
@@ -475,25 +372,22 @@ class SimplifiedOrchestrator(Node):
                 self.get_logger().info("Face detection servoing completed successfully!")
                 return True
             else:
-                self.get_logger().warn("Could not move to mouth!")
+                self.get_logger().warn("Face detection failed, falling back to preset position")
                 # Fall back to preset position
-                return False
+                return await self.robot_controller.move_to_bite_transfer()
         else:
             # Use preset bite transfer position
             self.get_logger().info("=== Moving to preset bite transfer position ===")
             return await self.robot_controller.move_to_bite_transfer()
     
     async def run_feeding_cycle(self):
-        """Main feeding cycle - simplified linear flow with tracking loss detection"""
+        """Main feeding cycle - simplified linear flow"""
         cycle_count = 1
         
         while rclpy.ok():
             self.get_logger().info(f"\n{'='*50}")
             self.get_logger().info(f"FEEDING CYCLE {cycle_count}")
             self.get_logger().info(f"{'='*50}")
-            
-            # Reset tracking lost flag at start of each cycle
-            self.tracking_lost = False
             
             try:
                 # Step 1: Move to overlook and open gripper
@@ -508,15 +402,9 @@ class SimplifiedOrchestrator(Node):
                 
                 # Step 2: Acquire food with retries
                 self.get_logger().info("STEP 2: Acquiring food...")
-                acquisition_result = await self.acquire_food_with_retries()
-                
-                if not acquisition_result:
-                    if self.tracking_lost:
-                        self.get_logger().error("❌ Food acquisition failed due to tracking loss - RESTARTING ENTIRE CYCLE")
-                        continue  # Restart the entire feeding cycle
-                    else:
-                        self.get_logger().error("❌ Food acquisition failed completely, restarting cycle")
-                        continue
+                if not await self.acquire_food_with_retries():
+                    self.get_logger().error("Food acquisition failed completely, restarting cycle")
+                    continue
                 
                 # Step 3: Move to intermediate position
                 self.get_logger().info("STEP 3: Moving to intermediate position...")
@@ -526,26 +414,6 @@ class SimplifiedOrchestrator(Node):
                     self.get_logger().error("Failed to move to intermediate!")
                     continue
                 
-                # Check if food is still grasped after moving to intermediate using food depth
-                self.get_logger().info("Checking if food is still grasped after moving to intermediate...")
-
-                #until we get new camera, continue with old way of manual pixel checking
-                transfer_success = self.wait_for_food_pickup()
-                
-                if not transfer_success:
-                    if self.tracking_lost:
-                        self.get_logger().error("Tracking lost during transfer to intermediate - restarting cycle")
-                        self.start_food_detection_pub.publish(Bool(data=False))
-                        continue
-                    else:
-                        self.get_logger().error("Food lost while moving to intermediate - restarting cycle")
-                        self.start_food_detection_pub.publish(Bool(data=False))
-                        continue
-                
-                # Stop food detection now that we've confirmed food is still in gripper
-                self.get_logger().info("Food confirmed in gripper - stopping detection")
-                self.start_food_detection_pub.publish(Bool(data=False))
-
                 # Step 4: Move food to mouth
                 self.get_logger().info("STEP 4: Moving food to mouth...")
                 self.robot_state_pub.publish(String(data='Moving towards mouth'))
@@ -553,7 +421,6 @@ class SimplifiedOrchestrator(Node):
                 if not await self.move_food_to_mouth():
                     self.get_logger().error("Failed to move food to mouth!")
                     continue
-                self.play_sound(self.snap)
 
                 # Step 5: Wait for food removal
                 self.get_logger().info("STEP 5: Waiting for food to be removed...")
@@ -574,12 +441,7 @@ class SimplifiedOrchestrator(Node):
                 break
             except Exception as e:
                 self.get_logger().error(f"Error in feeding cycle: {str(e)}")
-                # On any exception, check if it might be tracking-related and restart
-                if self.tracking_lost:
-                    self.get_logger().error("Exception may be related to tracking loss - restarting cycle")
-                    continue
-                else:
-                    break
+                break
         
         # Final cleanup
         self.get_logger().info("Feeding complete. Cleaning up...")

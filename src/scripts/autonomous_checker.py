@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Float64
 from cv_bridge import CvBridge
 import numpy as np
 import time
@@ -14,6 +15,7 @@ class AutonomousChecker(Node):
         self.bridge = CvBridge()
         self.latest_depth_image = None
         self.camera_info = None
+        self.latest_food_depth = None
         
         # Load autonomous config parameters
         self.check_pixel_x = config['feeding']['autonomous']['check_pixel_x']
@@ -27,8 +29,10 @@ class AutonomousChecker(Node):
             Image, '/camera/camera/aligned_depth_to_color/image_raw', 
             self.depth_callback, 10)
         self.camera_info_sub = self.create_subscription(
-            CameraInfo, '/camera/camera/color/camera_info', 
+            CameraInfo, '/camera/camera/color/camera_info',
             self.camera_info_callback, 10)
+        self.food_depth_sub = self.create_subscription(
+            Float64, '/food_depth', self.food_depth_callback, 10)
         
         self.get_logger().info('Autonomous checker initialized')
     
@@ -37,6 +41,9 @@ class AutonomousChecker(Node):
     
     def camera_info_callback(self, msg):
         self.camera_info = msg
+
+    def food_depth_callback(self, msg):
+        self.latest_food_depth = msg.data
     
     def get_depth_at_pixel(self, x, y):
         """Get depth value at specific pixel coordinates"""
@@ -70,7 +77,10 @@ class AutonomousChecker(Node):
         for point in self.check_pixel_points:
             self.check_pixel_x, self.check_pixel_y = point
             depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
-            self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            if depth is not None:
+                self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            else:
+                self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): None")
             if depth is not None and depth > 0:
                 depths.append(depth)
         
@@ -82,7 +92,30 @@ class AutonomousChecker(Node):
             return True
         else:
             return False
-    
+
+
+    def is_object_grasped_from_food_depth(self, food_depth, depth_threshold=0.25):
+        """
+        Check if object is grasped based on the food depth measurement
+
+        Args:
+            food_depth: Current depth measurement to the food segment (meters)
+            depth_threshold: Threshold depth indicating object is picked up (meters)
+
+        Returns:
+            bool: True if object appears to be grasped based on food depth
+        """
+        if food_depth is None:
+            self.get_logger().warn("No food depth measurement available")
+            return False
+
+        self.get_logger().info(f"Food depth: {food_depth}m, threshold: {depth_threshold:.3f}m")
+
+        # If food depth is less than the gripper length(plus a bit extra), then the object is in the gripper
+        is_grasped = food_depth < depth_threshold
+
+        return is_grasped
+
     def is_object_removed(self):
         """
         Check if object has been removed/eaten from gripper
@@ -92,7 +125,10 @@ class AutonomousChecker(Node):
         for point in self.check_pixel_points:
             self.check_pixel_x, self.check_pixel_y = point
             depth = self.get_depth_at_pixel(self.check_pixel_x, self.check_pixel_y)
-            self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            if depth is not None:
+                self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): {depth:.3f}m")
+            else:
+                self.get_logger().info(f"Depth at pixel ({self.check_pixel_x}, {self.check_pixel_y}): None")
             if depth is not None and depth > 0:
                 depths.append(depth)
         

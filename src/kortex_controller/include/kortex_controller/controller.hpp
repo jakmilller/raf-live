@@ -10,8 +10,10 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/wrench.hpp>
+#include "raf_interfaces/msg/force_feedback.hpp"
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 // Custom interfaces
@@ -61,6 +63,7 @@ private:
     // ROS2 publishers
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr mJointStatePub;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr mCartesianStatePub;
+    rclcpp::Publisher<raf_interfaces::msg::ForceFeedback>::SharedPtr mForceFeedbackPub;
     
     // ROS2 subscribers
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mTareFTSensorSub;
@@ -74,6 +77,7 @@ private:
     rclcpp::Service<raf_interfaces::srv::SetGripper>::SharedPtr mSetGripperService;
     rclcpp::Service<raf_interfaces::srv::SetTwist>::SharedPtr mSetTwistService;
     rclcpp::Service<raf_interfaces::srv::GetPose>::SharedPtr mGetPoseService;
+    rclcpp::Service<std_srvs::srv::Empty>::SharedPtr mResetSafetyService;
     
     // ROS2 timer
     rclcpp::TimerBase::SharedPtr mRobotStateTimer;
@@ -93,6 +97,8 @@ private:
                  std::shared_ptr<raf_interfaces::srv::SetTwist::Response> response);
     void getPose(const std::shared_ptr<raf_interfaces::srv::GetPose::Request> request,
                  std::shared_ptr<raf_interfaces::srv::GetPose::Response> response);
+    void resetSafety(const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+                     std::shared_ptr<std_srvs::srv::Empty::Response> response);
     
     // Subscriber callbacks
     void tareFTSensorCallback(const std_msgs::msg::Bool::SharedPtr msg);
@@ -128,10 +134,15 @@ private:
     // Force/torque sensor data
     std::atomic<bool> mTareFTSensor{false};
     std::atomic<bool> mUpdateForceThreshold{false};
+    std::atomic<bool> mSafetyLocked{false};
     std::vector<double> mZeroFTSensorValues;
     std::vector<double> mFTSensorValues;
     std::vector<double> mForceThreshold;
     std::vector<double> mNewForceThreshold;
+    
+    int mConsecutiveForceExceeds{0};
+    static constexpr double TOTAL_FORCE_THRESHOLD = 12.0;
+    static constexpr int CONSECUTIVE_LIMIT = 5;
     
     bool mWatchdogActive;
     

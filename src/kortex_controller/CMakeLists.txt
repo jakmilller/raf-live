@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -49,6 +50,7 @@ add_executable(controller
 ament_target_dependencies(controller
   rclcpp
   std_msgs
+  std_srvs
   sensor_msgs
   geometry_msgs
   trajectory_msgs

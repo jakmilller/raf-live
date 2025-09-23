@@ -2,6 +2,8 @@
 feeding:
   mode: "autonomous"  # need to add autonmous mode\
   voice: True
+  position_vector_threshold: 0.0025 # meters
+  servoing_timeout: 20  # seconds
 
   # options: gemini or dinox (dinox uses ChatGPT)
   detection_model: dinox
@@ -15,19 +17,19 @@ feeding:
     timeout: 30
   
   # paths for audio cues
-  power_on: "/home/mcrr-lab/raf-deploy/utils/sounds/power_on.mp3"
-  confirmation: "/home/mcrr-lab/raf-deploy/utils/sounds/confirmation.mp3"
-  power_off: "/home/mcrr-lab/raf-deploy/utils/sounds/power_off.mp3"
-  snap: "/home/mcrr-lab/raf-deploy/utils/sounds/snap.mp3"
+  power_on: "/home/mcrr-lab/raf-live/utils/sounds/power_on.mp3"
+  confirmation: "/home/mcrr-lab/raf-live/utils/sounds/confirmation.mp3"
+  power_off: "/home/mcrr-lab/raf-live/utils/sounds/power_off.mp3"
+  snap: "/home/mcrr-lab/raf-live/utils/sounds/snap.mp3"
 
   # Movement parameters
   z_down_offset: 0.01      # essentially food height (how far down to go on food)
   z_up_offset: 0.10         # how much to bring food up after grasp
-  grip_close: 0.056  # make sure it closes
+  grip_close:  0.056 #0.056  # make sure it closes
   
   # depth from overlook to table (m)
   #dist_from_table: 0.342 for lab
-  dist_from_table: 0.359
+  dist_from_table: 0.309
   # how far the tips of gripper should be from food after servoing
   dist_from_food: 0.015
   robotiq_offset: 0.0285
@@ -56,13 +58,22 @@ feeding:
 # Joint positions remain the same...
 joint_positions:
   overlook:
-  - -0.0011994877549712513
-  - 0.07462854816004315
-  - 3.127227828986015
-  - -1.6092475792456788
-  - -0.0014040185266894767
-  - -1.419356204039759
-  - 1.5704369332057904
+  - 0.01633534534800387
+  - 0.10436636196538467
+  - 3.1374567644169002
+  - -1.7397206347386227
+  - -0.0027451864516532254
+  - -1.2592773193406215
+  - 1.5997952215886604
+
+  # dist_from_table: 0.359
+  # - -0.0011994877549712513 
+  # - 0.07462854816004315
+  # - 3.127227828986015
+  # - -1.6092475792456788
+  # - -0.0014040185266894767
+  # - -1.419356204039759
+  # - 1.5704369332057904
 
   bite_transfer:
   - -0.5660415738908915
@@ -101,10 +112,20 @@ joint_positions:
   - -2.854664210376874
 
   intermediate:
-  - 1.1344957054132863
-  - 0.2620844958385992
-  - 3.1415907893770303
-  - -2.2690633161760045
-  - -6.072007285329306e-05
-  - 0.9598771595848071
-  - 1.5708497231747527
+    - 1.1344592201063521
+    - 0.2624653944535078
+    - 3.141584131474305
+    - -2.269327768072249
+    - -2.1837920938239108e-05
+    - 0.9598970667139555
+    - 1.5707984573237685
+
+  # - 0.17452548499313755
+  # - 0.26193274559073515
+  # - 3.141579337784343
+  # - -2.268986084504392
+  # - -2.6631610898775193e-06
+  # - 0.959873164843172
+  # - 1.5708012536429132
+
+

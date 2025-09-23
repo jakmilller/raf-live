@@ -32,6 +32,8 @@ class FaceDetectionNode(Node):
         
         # Face detection configuration
         self.target_distance = self.config['feeding']['face_detection'].get('target_distance', 0.04)
+        # need to know single bite/multibite to know how the robot should approach the mouth
+        self.single_bite = True
         
         # ROS setup
         self.bridge = CvBridge()
@@ -76,6 +78,8 @@ class FaceDetectionNode(Node):
             Image, '/camera/camera/color/image_raw', self.color_callback, 10)
         self.depth_sub = self.create_subscription(
             Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
+        self.single_bite_sub = self.create_subscription(
+            Bool, '/single_bite', self.single_bite_callback, 10)
         
         # Control subscriber - simplified interface
         self.start_detection_sub = self.create_subscription(
@@ -110,6 +114,10 @@ class FaceDetectionNode(Node):
     
     def color_callback(self, msg):
         self.latest_color_image = msg
+
+    def single_bite_callback(self, msg):
+        """Handle single bite signal"""
+        self.single_bite = msg.data
     
     def depth_callback(self, msg):
         self.latest_depth_image = msg
@@ -173,6 +181,10 @@ class FaceDetectionNode(Node):
             finger_midpoint.z = (right_pos.z + left_pos.z) / 2.0
             # Add finger pad length
             finger_midpoint.z += 0.03
+
+            # robot goes lower for multi-bite foods so ser can take a bite
+            if not self.single_bite:
+                finger_midpoint.y += 0.025
             
             return finger_midpoint
             
@@ -225,7 +237,7 @@ class FaceDetectionNode(Node):
         return vector
     
     def draw_mouth_landmarks_on_image(self, rgb_image, detection_result):
-        """Draw mouth landmarks and determine mouth openness - copied from unlabeled script"""
+        """Draw mouth landmarks and determine mouth openness"""
         face_landmarks_list = detection_result.face_landmarks
         annotated_image = np.copy(rgb_image)
 

@@ -19,6 +19,10 @@ class SAM2Tracker:
         self.tracking_initialized = False
         self.tracking_active = False
         
+        # Add tracking loss detection
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 3 
+        
         self._setup_sam2()
     
     def _setup_sam2(self):
@@ -56,6 +60,9 @@ class SAM2Tracker:
             self.predictor.load_first_frame(frame)
             ann_frame_idx = 0
             ann_obj_id = (1,)
+            
+            # Reset failure counter on new initialization
+            self.consecutive_failures = 0
             
             if detection_type == 'dinox':
                 # Use bounding box for DINOX stack
@@ -106,7 +113,8 @@ class SAM2Tracker:
             
             if len(out_obj_ids) == 0:
                 if self.node:
-                    self.node.get_logger().warn("Tracking lost")
+                    self.node.get_logger().warn("Tracking lost - no objects detected")
+                self._handle_tracking_failure()
                 return None, None
             
             # Get mask and convert to proper format
@@ -118,14 +126,29 @@ class SAM2Tracker:
             if centroid is None:
                 if self.node:
                     self.node.get_logger().warn("No centroid found in mask")
+                self._handle_tracking_failure()
                 return None, None
             
+            # Reset failure counter on successful tracking
+            self.consecutive_failures = 0
             return mask_2d, centroid
             
         except Exception as e:
             if self.node:
                 self.node.get_logger().error(f"Error in SAM2 tracking: {e}")
+            self._handle_tracking_failure()
             return None, None
+    
+    def _handle_tracking_failure(self):
+        """Handle tracking failure and check if we should signal lost tracking"""
+        self.consecutive_failures += 1
+        
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            if self.node:
+                self.node.get_logger().error(f"SAM2 tracking lost after {self.consecutive_failures} consecutive failures!")
+            
+            # Mark tracking as lost (but keep initialized=True so orchestrator can detect this state)
+            self.tracking_active = False
     
     def _get_mask_centroid(self, mask):
         """Find the centroid of a binary mask"""
@@ -140,7 +163,12 @@ class SAM2Tracker:
         """Reset tracking state"""
         self.tracking_initialized = False
         self.tracking_active = False
+        self.consecutive_failures = 0
     
     def is_tracking_active(self):
         """Check if tracking is currently active"""
         return self.tracking_active and self.tracking_initialized
+    
+    def is_tracking_lost(self):
+        """Check if tracking was initialized but then lost"""
+        return self.tracking_initialized and not self.tracking_active

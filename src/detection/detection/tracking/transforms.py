@@ -76,6 +76,11 @@ class CoordinateTransforms:
                 
             # use the average mask depth instead of a single point
             avg_depth = np.mean(mask_depths) / 1000.0  # Convert mm to m
+
+            # Publish the average food depth for tracking purposes
+            if hasattr(self.node, 'food_depth_pub'):
+                from std_msgs.msg import Float64
+                self.node.food_depth_pub.publish(Float64(data=avg_depth))
             
             # Convert pixel to 3D point in camera frame
             target_x = (pixel_x - self.node.cx) * avg_depth / self.node.fx
