@@ -41,11 +41,14 @@ feeding:
     
     # pixels in the RS frame (848x480 res) for checking
     check_pixel_points:
-    - [528,431]
-    - [534,435]
-    - [531,433]
-    - [528,435]
-    - [534,431]
+      - [529,429]
+      - [529,430]
+    # - [528,431]
+    # - [534,435]
+    # - [531,433]
+    # - [528,435]
+    # - [534,431]
+
 
     consecutive_checks: 2     # Number of consecutive checks needed to confirm state
     check_interval: 0.5       # Time between checks (seconds)

@@ -155,13 +155,13 @@ Controller::Controller() : Node("controller")
     try {
         publishState();
         RCLCPP_INFO(this->get_logger(), "Manual publishState test completed successfully");
-        
+
         // If manual test works, start the timer
         RCLCPP_INFO(this->get_logger(), "Starting state publishing timer...");
         mRobotStateTimer = this->create_wall_timer(
             std::chrono::milliseconds(100), std::bind(&Controller::publishState, this));
         RCLCPP_INFO(this->get_logger(), "Timer started");
-        
+
     } catch (...) {
         RCLCPP_ERROR(this->get_logger(), "Manual publishState test failed - timer will NOT be started");
     }
@@ -348,11 +348,11 @@ void Controller::publishState()
             
             if (total_force_magnitude > TOTAL_FORCE_THRESHOLD) {
                 mConsecutiveForceExceeds++;
-                RCLCPP_WARN(this->get_logger(), "Total force magnitude (%.2f N) exceeds 12N threshold. Count: %d/5", 
+                RCLCPP_WARN(this->get_logger(), "Total force magnitude (%.2f N) exceeds max force threshold. Count: %d", 
                     total_force_magnitude, mConsecutiveForceExceeds);
                 
                 if (mConsecutiveForceExceeds >= CONSECUTIVE_LIMIT) {
-                    RCLCPP_ERROR(this->get_logger(), "EMERGENCY STOP: Total force magnitude (%.2f N) exceeded 12N threshold %d times consecutively!", 
+                    RCLCPP_ERROR(this->get_logger(), "EMERGENCY STOP: Total force magnitude (%.2f N) exceeded max force threshold %d times consecutively!", 
                         total_force_magnitude, CONSECUTIVE_LIMIT);
                     RCLCPP_ERROR(this->get_logger(), "Stopping robot and entering safety lock mode...");
                     
@@ -902,7 +902,7 @@ void Controller::resetSafety(const std::shared_ptr<std_srvs::srv::Empty::Request
     if (mSafetyLocked.load()) {
         mSafetyLocked.store(false);
         RCLCPP_INFO(this->get_logger(), "Safety lock reset - robot control restored");
-        RCLCPP_INFO(this->get_logger(), "Current tool force Z: %.2f N", 
+        RCLCPP_INFO(this->get_logger(), "Current tool force Z: %.2f N",
             std::abs(mFTSensorValues[2] - mZeroFTSensorValues[2]));
     } else {
         RCLCPP_INFO(this->get_logger(), "Robot was not in safety lock mode");

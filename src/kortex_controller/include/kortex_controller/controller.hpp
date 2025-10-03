@@ -7,6 +7,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/wrench.hpp>
@@ -79,7 +80,7 @@ private:
     rclcpp::Service<raf_interfaces::srv::GetPose>::SharedPtr mGetPoseService;
     rclcpp::Service<std_srvs::srv::Empty>::SharedPtr mResetSafetyService;
     
-    // ROS2 timer
+    // ROS2 timers
     rclcpp::TimerBase::SharedPtr mRobotStateTimer;
     
     // Service callbacks
@@ -103,8 +104,8 @@ private:
     // Subscriber callbacks
     void tareFTSensorCallback(const std_msgs::msg::Bool::SharedPtr msg);
     void eStopCallback(const std_msgs::msg::Bool::SharedPtr msg);
-    
-    // Timer callback
+
+    // Timer callbacks
     void publishState();
     
     // Utility functions
@@ -141,11 +142,11 @@ private:
     std::vector<double> mNewForceThreshold;
     
     int mConsecutiveForceExceeds{0};
-    static constexpr double TOTAL_FORCE_THRESHOLD = 12.0;
-    static constexpr int CONSECUTIVE_LIMIT = 5;
-    
+    static constexpr double TOTAL_FORCE_THRESHOLD = 13.0;
+    static constexpr int CONSECUTIVE_LIMIT = 10;
+
     bool mWatchdogActive;
-    
+
     // Timeout for actions
     static constexpr auto TIMEOUT_DURATION = std::chrono::seconds(20);
 };

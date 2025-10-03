@@ -210,7 +210,13 @@ class DinoxDetector(BaseDetector):
                         bite_number = 1
                         self.single_bite = True
                         self.current_item = item_name
-                    
+
+                    # Check if ChatGPT detected "none" - if so, return None to trigger restart
+                    if item_name.lower() == "none":
+                        if self.node:
+                            self.node.get_logger().warn("ChatGPT detected 'none' - no food item to track")
+                        return None
+
                     selected_item = item_name
 
             # Log the final parsing result for debugging

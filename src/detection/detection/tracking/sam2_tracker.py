@@ -19,9 +19,9 @@ class SAM2Tracker:
         self.tracking_initialized = False
         self.tracking_active = False
         
-        # Add tracking loss detection
+        # Add tracking loss detection - immediate failure mode
         self.consecutive_failures = 0
-        self.max_consecutive_failures = 3 
+        self.max_consecutive_failures = 1 
         
         self._setup_sam2()
     
@@ -145,8 +145,8 @@ class SAM2Tracker:
         
         if self.consecutive_failures >= self.max_consecutive_failures:
             if self.node:
-                self.node.get_logger().error(f"SAM2 tracking lost after {self.consecutive_failures} consecutive failures!")
-            
+                self.node.get_logger().error(f"SAM2 tracking lost immediately on failure!")
+
             # Mark tracking as lost (but keep initialized=True so orchestrator can detect this state)
             self.tracking_active = False
     

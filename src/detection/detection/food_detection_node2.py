@@ -84,7 +84,7 @@ class FoodDetectionNode(Node):
         self.camera_info_sub = self.create_subscription(
             CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 1)
         self.start_detection_sub = self.create_subscription(
-            Bool, '/start_food_detection', self.start_food_detection_callback, 10)
+            Bool, '/start_food_detection', self.start_detection_callback, 10)
         self.stop_detection_sub = self.create_subscription(
             Bool, '/stop_food_detection', self.stop_detection_callback, 10)
         
@@ -103,8 +103,6 @@ class FoodDetectionNode(Node):
         self.tracking_lost_pub = self.create_publisher(Bool, '/tracking_lost', 1)
 
         self.food_depth_pub = self.create_publisher(Float64, '/food_depth', 1)
-
-        self.estop_publisher = self.create_publisher(Bool, '/my_gen3/estop', 10)
 
         self.get_logger().info('Food Detection Node initialized')
 
@@ -139,22 +137,14 @@ class FoodDetectionNode(Node):
             self.get_logger().info("Received stop detection command - resetting to fresh state")
             self.tracking = False
             self.tracking_ready_sent = False  # Reset flag for next detection cycle
-
-            # Complete SAM2 tracker reset (like old version)
-            self.sam2_tracker.reset_tracking()
-
-            # Complete timer cleanup (like old version)
             if self.timer:
                 self.timer.cancel()
-                self.timer = None
-
             self.tracking_ready_pub.publish(Bool(data=False))
 
     def start_food_detection_callback(self, msg):
         if msg.data:
             self.get_logger().info("Starting food detection...")
             self.tracking = False
-            self.tracking_ready_sent = False
 
             # run ChatGPT and DINOX on latest color image for initial detection
             if self.latest_color_image is None:
@@ -166,7 +156,6 @@ class FoodDetectionNode(Node):
             detection_result = self.detector.detect_food(frame)
             if detection_result is None:
                 self.get_logger().error("GPT + DINOX stack failed to generate bounding box")
-                self.tracking_lost_pub.publish(Bool(data=True))
                 return
             self.image_viz.save_debug_image(frame, detection_result, self.detection_model)
 
@@ -175,7 +164,6 @@ class FoodDetectionNode(Node):
                 frame, detection_result, self.detection_model)
             if not self.tracking:
                 self.get_logger().error("Failed to initialize tracking with SAM2")
-                self.tracking_lost_pub.publish(Bool(data=True))
                 return
             
             # get current item data
@@ -188,18 +176,13 @@ class FoodDetectionNode(Node):
             # now, start timer and begin processing frames in real-time
             if self.timer:
                 self.timer.cancel()
-            self.timer = self.create_timer(0.1, lambda: self._update_tracking_and_publish(current_item, single_bite)) # 10 Hz
+            
+            while self.tracking:
+                self.timer = self.create_timer(0.1, self._update_tracking_and_publish(frame, current_item, single_bite)) # 10 Hz
 
-    def _update_tracking_and_publish(self, current_item, single_bite):
+    def _update_tracking_and_publish(self, frame, current_item, single_bite):
         """Publishes real-time position vectors and grasp data from SAM2 segment"""
-        if not self.tracking or self.latest_color_image is None:
-            return
-
-
         try:
-            # Get fresh frame every time
-            frame = self.bridge.imgmsg_to_cv2(self.latest_color_image, "bgr8")
-
             # Update tracking
             mask_2d, _ = self.sam2_tracker.update_tracking(frame)
 
@@ -208,17 +191,11 @@ class FoodDetectionNode(Node):
                 if self.sam2_tracker.is_tracking_lost():
                     self.get_logger().error("SAM2 tracking permanently lost!")
                     self.tracking_lost_pub.publish(Bool(data=True))
-                    # Do complete reset like stop_detection_callback
                     self.tracking = False
-                    self.tracking_ready_sent = False
-                    self.sam2_tracker.reset_tracking()
-                    if self.timer:
-                        self.timer.cancel()
-                        self.timer = None
-                    self.tracking_ready_pub.publish(Bool(data=False))
                     return
-
-
+                
+                return # temporary loss, wait for next frame
+            
             if self.latest_depth_image is None:
                 self.get_logger().error("No depth image received")
                 return

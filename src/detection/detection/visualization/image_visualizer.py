@@ -103,17 +103,17 @@ class ImageVisualizer:
             cv2.line(vis_image, tuple(width_p1), tuple(width_p2), (255, 255, 0), 2)  # Cyan line
             
         # Add text information
-        info_text = [
-            f"Detected Item: {current_item}",
-            f"Food Angle: {food_angle:.2f} deg" if food_angle is not None else "Food Angle: N/A",
-            f"Single Bite: {single_bite}"
-        ]
+        # info_text = [
+        #     f"Detected Item: {current_item}",
+        #     f"Food Angle: {food_angle:.2f} deg" if food_angle is not None else "Food Angle: N/A",
+        #     f"Single Bite: {single_bite}"
+        # ]
         
-        for i, text in enumerate(info_text):
-            cv2.putText(vis_image, text, (10, 40 + i * 40), 
-                        cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 3, cv2.LINE_AA)
-            cv2.putText(vis_image, text, (10, 40 + i * 40), 
-                        cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 0, 0), 1, cv2.LINE_AA)
+        # for i, text in enumerate(info_text):
+        #     cv2.putText(vis_image, text, (10, 40 + i * 40), 
+        #                 cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 3, cv2.LINE_AA)
+        #     cv2.putText(vis_image, text, (10, 40 + i * 40), 
+        #                 cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 0, 0), 1, cv2.LINE_AA)
             
         return vis_image
     

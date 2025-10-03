@@ -65,30 +65,29 @@ class FoodDetectionNode(Node):
         self.image_viz = ImageVisualizer(self)
         
         # ROS setup - camera parameters
-        # self.fx = 615.0
-        # self.fy = 615.0
-        # self.cx = 320.0
-        # self.cy = 240.0
-
-        self.tracking = False # state
-        self.tracking_ready_sent = False # flag to ensure tracking_ready is only sent once
-        # how far the robot should be above the food item before pickup sequence starts
+        self.fx = 615.0
+        self.fy = 615.0
+        self.cx = 320.0
+        self.cy = 240.0
+        
+        # State
+        self.detection_active = False
+        self.tracking_initialized = False
         self.distance_from_target = self.config['feeding']['dist_from_food']
-        self.timer = None # timer to process frames
-
+        
         # Subscribers
         self.color_sub = self.create_subscription(
-            Image, '/camera/camera/color/image_raw', self.color_callback, 1)
+            Image, '/camera/camera/color/image_raw', self.color_callback, 10)
         self.depth_sub = self.create_subscription(
-            Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 1)
+            Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
         self.camera_info_sub = self.create_subscription(
-            CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 1)
-        self.start_detection_sub = self.create_subscription(
-            Bool, '/start_food_detection', self.start_food_detection_callback, 10)
-        self.stop_detection_sub = self.create_subscription(
-            Bool, '/stop_food_detection', self.stop_detection_callback, 10)
+            CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
         
-        # Publishers
+        # Control subscriber - simplified interface
+        self.start_detection_sub = self.create_subscription(
+            Bool, '/start_food_detection', self.start_detection_callback, 10)
+        
+        # Publishers - only what orchestrator needs
         self.position_vector_pub = self.create_publisher(Vector3, '/position_vector', 1)
         self.food_angle_pub = self.create_publisher(Float64, '/food_angle', 1)
         self.grip_value_pub = self.create_publisher(Float64, '/grip_value', 1)
@@ -96,17 +95,20 @@ class FoodDetectionNode(Node):
         self.single_bite_pub = self.create_publisher(Bool, '/single_bite', 1)
 
         self.segmented_image_pub = self.create_publisher(CompressedImage, '/segmented_image', 10)
-        self.tracking_ready_pub = self.create_publisher(Bool, '/food_tracking_ready', 1)
+        self.detection_ready_pub = self.create_publisher(Bool, '/food_detection_ready', 1)
         self.currently_serving_pub = self.create_publisher(String, '/currently_serving', 10)
         self.command_queue_pub = self.create_publisher(String, '/command_queue', 10)
         
+        # ADD NEW PUBLISHER FOR TRACKING LOST SIGNAL
         self.tracking_lost_pub = self.create_publisher(Bool, '/tracking_lost', 1)
 
+        # ADD NEW PUBLISHER FOR FOOD DEPTH
         self.food_depth_pub = self.create_publisher(Float64, '/food_depth', 1)
-
-        self.estop_publisher = self.create_publisher(Bool, '/my_gen3/estop', 10)
-
-        self.get_logger().info('Food Detection Node initialized')
+        
+        # Processing timer (only active when detection is on)
+        self.timer = None
+        
+        self.get_logger().info('Simple Food Detection Node initialized')
 
     def _load_prompt(self):
         """Load detection prompt"""
@@ -114,12 +116,13 @@ class FoodDetectionNode(Node):
             prompt_file = os.path.expanduser('~/raf-live/src/detection/prompts/gpt_identification.txt')
         else:
             prompt_file = os.path.expanduser('~/raf-live/src/detection/prompts/gemini_identification.txt')
+        
         try:
             with open(prompt_file, 'r') as f:
                 return f.read().strip()
         except:
-            self.get_logger().error(f"Prompt file not found: {prompt_file}, are you in the right directory?")
-
+            return "Identify food items in this image."
+    
     def color_callback(self, msg):
         self.latest_color_image = msg
     
@@ -133,100 +136,116 @@ class FoodDetectionNode(Node):
             self.fy = msg.k[4]
             self.cx = msg.k[2]
             self.cy = msg.k[5]
-
-    def stop_detection_callback(self, msg):
-        if msg.data:
-            self.get_logger().info("Received stop detection command - resetting to fresh state")
-            self.tracking = False
-            self.tracking_ready_sent = False  # Reset flag for next detection cycle
-
-            # Complete SAM2 tracker reset (like old version)
+    
+    def start_detection_callback(self, msg):
+        """Simple on/off control"""
+        if msg.data and not self.detection_active:
+            self.get_logger().info("Starting food detection")
+            self.detection_active = True
+            self.tracking_initialized = False
             self.sam2_tracker.reset_tracking()
-
-            # Complete timer cleanup (like old version)
+            self.grasp_analyzer.reset_food_height_calculation()
+            
+            # Start processing timer
+            if self.timer:
+                self.timer.cancel()
+            self.timer = self.create_timer(0.1, self.process_frame)
+            
+        elif not msg.data and self.detection_active:
+            self.get_logger().info("Stopping food detection")
+            self.detection_active = False
+            self.tracking_initialized = False
+            self.sam2_tracker.reset_tracking()
+            
+            # Stop processing timer
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
-
-            self.tracking_ready_pub.publish(Bool(data=False))
-
-    def start_food_detection_callback(self, msg):
-        if msg.data:
-            self.get_logger().info("Starting food detection...")
-            self.tracking = False
-            self.tracking_ready_sent = False
-
-            # run ChatGPT and DINOX on latest color image for initial detection
-            if self.latest_color_image is None:
-                self.get_logger().error("No color image received yet")
-                return
-            frame = self.bridge.imgmsg_to_cv2(self.latest_color_image, "bgr8")
-
-            # get the bounding box around the desired food item
-            detection_result = self.detector.detect_food(frame)
-            if detection_result is None:
-                self.get_logger().error("GPT + DINOX stack failed to generate bounding box")
-                self.tracking_lost_pub.publish(Bool(data=True))
-                return
-            self.image_viz.save_debug_image(frame, detection_result, self.detection_model)
-
-            # initialize tracking by giving bounding box to SAM2
-            self.tracking = self.sam2_tracker.initialize_tracking(
-                frame, detection_result, self.detection_model)
-            if not self.tracking:
-                self.get_logger().error("Failed to initialize tracking with SAM2")
-                self.tracking_lost_pub.publish(Bool(data=True))
-                return
             
-            # get current item data
-            current_item = self.detector.get_current_item()
-            single_bite = self.detector.is_single_bite()
-            self.single_bite_pub.publish(Bool(data=single_bite))
-            self.get_logger().info(f"Tracking started for: {current_item} (single_bite: {single_bite})")
-            # Don't publish tracking_ready yet - wait for first position vector
+            # Note: Robot stopping is handled by orchestrator via /servoing_on topic
             
-            # now, start timer and begin processing frames in real-time
-            if self.timer:
-                self.timer.cancel()
-            self.timer = self.create_timer(0.1, lambda: self._update_tracking_and_publish(current_item, single_bite)) # 10 Hz
-
-    def _update_tracking_and_publish(self, current_item, single_bite):
-        """Publishes real-time position vectors and grasp data from SAM2 segment"""
-        if not self.tracking or self.latest_color_image is None:
+            # Signal detection not ready
+            self.detection_ready_pub.publish(Bool(data=False))
+            
+            # Clear segmented image
+            self._clear_segmented_image()
+    
+    def process_frame(self):
+        """Main processing loop"""
+        if not self.detection_active or self.latest_color_image is None:
             return
-
-
+        
         try:
-            # Get fresh frame every time
             frame = self.bridge.imgmsg_to_cv2(self.latest_color_image, "bgr8")
-
+            
+            if not self.sam2_tracker.is_tracking_active():
+                # Check if tracking was lost (initialized but not active)
+                if self.sam2_tracker.is_tracking_lost():
+                    self.get_logger().error("SAM2 tracking lost! Signaling orchestrator to restart cycle.")
+                    self.tracking_lost_pub.publish(Bool(data=True))
+                    return
+                
+                # run GPT/DINOX stack to identify bounding box around selected food item
+                detection_result = self.detector.detect_food(frame)
+                if detection_result is not None:
+                    # Save debug image
+                    self.image_viz.save_debug_image(frame, detection_result, self.detection_model)
+                    
+                    # Initialize tracking
+                    success = self.sam2_tracker.initialize_tracking(frame, detection_result, self.detection_model)
+                    if success:
+                        # Get current item info and immediately start publishing
+                        current_item = self.detector.get_current_item()
+                        single_bite = self.detector.is_single_bite()
+                        self.single_bite_pub.publish(Bool(data=single_bite))
+                        self.get_logger().info(f"Tracking started for: {current_item} (single_bite: {single_bite})")
+                        
+                        # Mark as ready and start publishing vectors
+                        self.tracking_initialized = True
+                        self.detection_ready_pub.publish(Bool(data=True))
+                        self.get_logger().info("Food detection ready - tracking initialized!")
+                        
+                        self._update_tracking_and_publish(frame, current_item, single_bite)
+                else:
+                    # Still looking for food - don't publish anything yet
+                    pass
+            else:
+                current_item = self.detector.get_current_item()
+                single_bite = self.detector.is_single_bite()
+                self.single_bite_pub.publish(Bool(data=single_bite))
+                self._update_tracking_and_publish(frame, current_item, single_bite)
+                
+        except Exception as e:
+            self.get_logger().error(f'Error in process_frame: {e}')
+            # Note: Robot stopping is handled by orchestrator via /servoing_on topic
+    
+    def _update_tracking_and_publish(self, frame, current_item, single_bite):
+        """Update tracking and publish results"""
+        try:
             # Update tracking
             mask_2d, _ = self.sam2_tracker.update_tracking(frame)
-
+            
             if mask_2d is None:
                 # Check if this is a permanent tracking loss
                 if self.sam2_tracker.is_tracking_lost():
-                    self.get_logger().error("SAM2 tracking permanently lost!")
+                    self.get_logger().error("SAM2 tracking permanently lost! Signaling orchestrator to restart cycle.")
                     self.tracking_lost_pub.publish(Bool(data=True))
-                    # Do complete reset like stop_detection_callback
-                    self.tracking = False
-                    self.tracking_ready_sent = False
-                    self.sam2_tracker.reset_tracking()
-                    if self.timer:
-                        self.timer.cancel()
-                        self.timer = None
-                    self.tracking_ready_pub.publish(Bool(data=False))
                     return
-
-
-            if self.latest_depth_image is None:
-                self.get_logger().error("No depth image received")
+                
+                # Temporary failure - no position vector published
                 return
-               
+            
+            # Get depth image
+            if self.latest_depth_image is None:
+                self.get_logger().error("No depth image available")
+                # No depth image - no position vector published
+                return
+            
             depth_image = self.bridge.imgmsg_to_cv2(self.latest_depth_image, desired_encoding='passthrough')
-
-            # get all grasp data
+            
+            # Analyze grasp
             grasp_info = self.grasp_analyzer.analyze_grasp(mask_2d, depth_image, single_bite, current_item)
+            
             if not grasp_info['success']:
                 self.get_logger().warn("Grasp analysis failed")
                 # Grasp analysis failed - no position vector published
@@ -234,7 +253,7 @@ class FoodDetectionNode(Node):
             
             centroid = grasp_info['centroid']
             
-            # publish grip value and height
+            # Publish grip value and food height (only once per detection cycle)
             if grasp_info['grip_value'] is not None:
                 self.grip_value_pub.publish(Float64(data=grasp_info['grip_value']))
             
@@ -251,27 +270,34 @@ class FoodDetectionNode(Node):
             
             if position_vector is not None:
                 self.position_vector_pub.publish(position_vector)
-
-                # Publish tracking_ready only once after first successful position vector
-                if not self.tracking_ready_sent:
-                    self.tracking_ready_pub.publish(Bool(data=True))
-                    self.tracking_ready_sent = True
-                    self.get_logger().info("First position vector published - tracking ready!")
             else:
-                self.get_logger().warn("Failed to publish position vector!")
+                # Position vector calculation failed - no position vector published
                 pass
-
-            # create visualization
+            
+            # Create and publish visualization
             vis_image = self.image_viz.create_tracking_visualization(
                 frame, mask_2d, centroid, grasp_info['width_p1'], grasp_info['width_p2'],
                 grasp_info['food_angle'], current_item, single_bite)
             self.image_viz.publish_segmented_image(vis_image)
-        
+            
         except Exception as e:
             self.get_logger().error(f"Error in tracking update: {e}")
-            self.tracking = False
-            return
-        
+            # Error in tracking update - no position vector published
+    
+    # Note: _publish_zero_vector() removed - robot stopping handled by servoing node via /servoing_on
+    
+    def _clear_segmented_image(self):
+        """Clear the segmented image display"""
+        try:
+            msg = CompressedImage()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.format = "jpeg"
+            msg.data = b''
+            self.segmented_image_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Failed to clear segmented image: {e}")
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = FoodDetectionNode()
@@ -286,5 +312,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-            
-    
