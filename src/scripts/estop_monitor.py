@@ -7,6 +7,7 @@ import serial
 import serial.tools.list_ports
 import time
 import threading
+import subprocess
 
 
 class EstopMonitor(Node):
@@ -15,8 +16,10 @@ class EstopMonitor(Node):
         self.estop_publisher = self.create_publisher(Bool, '/my_gen3/estop', 10)
         self.serial_connection = None
         self.running = True
+        self.realsense_connected = True
 
         threading.Thread(target=self.monitor_arduino, daemon=True).start()
+        threading.Thread(target=self.monitor_realsense, daemon=True).start()
 
     def find_arduino(self):
         """Find Arduino port"""
@@ -65,6 +68,37 @@ class EstopMonitor(Node):
                 if self.serial_connection:
                     self.serial_connection.close()
                 self.serial_connection = None
+                time.sleep(1)
+
+    def check_realsense_connected(self):
+        """Check if Intel RealSense is connected"""
+        try:
+            result = subprocess.run(['rs-enumerate-devices', '-s'],
+                                    capture_output=True, text=True, timeout=2)
+            return 'Intel RealSense' in result.stdout
+        except:
+            return False
+
+    def monitor_realsense(self):
+        """Monitor Intel RealSense connection status"""
+        while self.running:
+            try:
+                is_connected = self.check_realsense_connected()
+
+                if not is_connected and self.realsense_connected:
+                    self.get_logger().error("🚨 REALSENSE DISCONNECTED - EMERGENCY STOP! 🚨")
+                    msg = Bool()
+                    msg.data = True
+                    self.estop_publisher.publish(msg)
+                    self.realsense_connected = False
+                elif is_connected and not self.realsense_connected:
+                    self.get_logger().info("RealSense reconnected")
+                    self.realsense_connected = True
+
+                time.sleep(1)
+
+            except Exception as e:
+                self.get_logger().error(f"RealSense monitor error: {e}")
                 time.sleep(1)
 
 

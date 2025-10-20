@@ -129,27 +129,12 @@ class AudioProcessor:
                 raise
 
     async def run(self, client):
+        prompt_path = os.path.expanduser('~/raf-live/src/detection/prompts/gemini_identification.txt')
+        with open(prompt_path, 'r') as file:
+            prompt = file.read()
+            
         CONFIG = {
-            "system_instruction": types.Content(parts=[types.Part(text="""
-                You are a food item identifier for a robot. Your ONLY task is to listen to the user and identify which food item they are asking for.
-
-                        IMPORTANT: Only respond when you hear a COMPLETE food request. Do not respond to partial words or incomplete sentences.
-
-                        Your response MUST be ONLY the name of the food item they want in lowercase, combined with a number. This number will be either 1 (if the food is typically eaten in a single bite) or 2 (if the food is typically eaten in multiple bites.
-                        You should only return a food item if the context of the conversation shows that the user would like to be fed that item in the current moment. Passively talking about food should not trigger a response.
-                        For example, if the user says "I would like some fruit gummies, please", you MUST output "fruit gummy 1".
-                        If the user says "Can I have the pretzel rods?", you MUST output "pretzel rod 2". It is ok to include an adjective to describe the specific food that the user wants.
-                        For example, if the user says "I would like green grapes, the output should be "green grape 1". Notice that you should always avoid using plurals in your output. Even if the users says "I want peppers", you should output "pepper".
-                        If the user does not provide a complete food item request or if you receive incomplete audio, you MUST output "None".
-                        Do not add any other words, explanations, or punctuation.
-
-                        Also be responsive to when the user wants to clear the queue. If the users says "clear the queue", you must output "clear". Phrases like "clear queue, "please reset commands", or anything similar should result in an output of "clear".
-
-
-                        The last case is if the user asks for multiple items in the same command. When this happens you must output each item and number, seperated by commas. If the user says "Could I have a red gummy, then an orange gummy?", you must output "red gummy 1, orange gummy 1".
-                        If the user specifies the number of items they want, include that many items in the output. If the user says "I want two red gummies and a grape", you must output "red gummy 1, red gummy 1, grape 1".
-                        If the user says "I want three french fries and a chocolate bar", you must output "french fry 2, french fry 2, french fry 2, chocolate bar 2".
-            """)]), "response_modalities": ["TEXT"],
+            "system_instruction": types.Content(parts=[types.Part(text=prompt)]), "response_modalities": ["TEXT"],
         }
         try:
             print("🔄 Connecting to Gemini...")
@@ -188,8 +173,6 @@ class VoiceNode(Node):
     def __init__(self):
         super().__init__('voice_node')
         load_dotenv(os.path.expanduser('~/raf-live/.env'))
-        
-        # NOTE: The genai.Client is no longer needed here, it's created in the child process
         
         config_path = os.path.expanduser('~/raf-live/config.yaml')
         with open(config_path, 'r') as file:

@@ -1,20 +1,20 @@
 Objective: To determine the items on the plate.
-Available items: pretzel rod, grape, chicken nugget, potato wedge, apple slice, green bean, carrot, cut grilled chicken, broccoli, garlic bread, cut potato, sausage, cut fruit, cookie, cut grilled cheese, cut salmon, cut chicken parmesan
+Available items: cucumber, sweet potato fry, chocolate bite
 
 
 You have been given an image of a plate. From the available items, what items are present, as a comma-separated list? After each item, output the number of bites it should take to eat that food item. This will always be either 1 or 2 bites.
-Format your answer in one-line as follows: first_item X, second_item Y, third_item Z. X represents the number of bites (either 1 or 2) it should take to eat the first_item, while Y is the number of bites (either 1 or 2) it will take to eat the second item, and Z is the number of bites (either 1 or 2) it will take to eat the second item.
+Format your answer in one-line as follows: first_item X, second_item Y, third_item Z. X represents the number of bites. This should always be one.
 Do not list an item that is not in the given list of available items. Assume that everything on the plate is listed in the available items. 
 Do not return a food item which is not present in the "Available Items" list. If 3 different food items are on the plate then the list should contain 3 food items. If there is only one type of food then you should only output one food item and bite number. Make sure the number of distinguishable items detected is the number of elements in the list.
-Always return an item on the list, unless there is absolutely no object detected.If there is no food detected on the plate, output "none". Chicken nuggets, cut grilled chicken, cut potato, cookie, and broccoli should always be one bite (1). 
-
+Always return an item on the list, unless there is absolutely no object detected.If there is no food detected on the plate, output "none". 
 
 Examples:
-Input: Picture of pretzel rod and grape
-Output: pretzel rod 2, grape 1
+Input: Picture of grilled chicken and grape
+Output: cut grilled chicken 1, grape 1
 
 Input: Picture of multiple green beans.
 Output: green bean 1
 
-Input: Picture of potato wedges, multiple chicken nuggets, and a pretzel rod.
-Output: potato wedge 2, chicken nugget 1, pretzel rod 2
+Input: Picture of red skin roasted potato, multiple cut chiekn tenders
+Output: potato wedge 1, cut chicken tender 1
+

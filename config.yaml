@@ -13,7 +13,7 @@ feeding:
     enabled: True
     gain_planar: 0.35
     gain_depth: 0.35
-    target_distance: 0.04  # distance from face to mouth (4cm)
+    target_distance: 0.0  # distance from face to mouth (4cm)
     timeout: 30
   
   # paths for audio cues
@@ -25,13 +25,13 @@ feeding:
   # Movement parameters
   z_down_offset: 0.01      # essentially food height (how far down to go on food)
   z_up_offset: 0.10         # how much to bring food up after grasp
-  grip_close:  0.056 #0.056  # make sure it closes
+  grip_close:  0.075 #0.056  # make sure it closes
   
   # depth from overlook to table (m)
   #dist_from_table: 0.342 for lab
-  dist_from_table: 0.309
+  dist_from_table: 0.345 #last update: eric table trial
   # how far the tips of gripper should be from food after servoing
-  dist_from_food: 0.015
+  dist_from_food: 0.01
   robotiq_offset: 0.0285
   max_retries: 3  # Maximum number of retries for food pickup
 
@@ -41,8 +41,14 @@ feeding:
     
     # pixels in the RS frame (848x480 res) for checking
     check_pixel_points:
-      - [529,429]
-      - [529,430]
+    - [525,416]
+    - [531,416]
+      # - [529,429]
+      # - [529,430]
+    # - [231,181]
+    # - [232,184]
+
+
     # - [528,431]
     # - [534,435]
     # - [531,433]
@@ -51,7 +57,7 @@ feeding:
 
 
     consecutive_checks: 2     # Number of consecutive checks needed to confirm state
-    check_interval: 0.5       # Time between checks (seconds)
+    check_interval: 0.3       # Time between checks (seconds)
 
   service_timeout: 20  
   
@@ -61,13 +67,30 @@ feeding:
 # Joint positions remain the same...
 joint_positions:
   overlook:
-  - 0.01633534534800387
-  - 0.10436636196538467
-  - 3.1374567644169002
-  - -1.7397206347386227
-  - -0.0027451864516532254
-  - -1.2592773193406215
-  - 1.5997952215886604
+  - 0.02454584394098834
+  - 0.33725213438230167
+  - -3.040529684962921
+  - -1.0230836927903662
+  - -0.042024682001450486
+  - -1.7426410571900037
+  - 0.09738833895478063
+
+  # - 0.023849439799500226
+  # - 0.43929241655020546
+  # - -3.042683383336468
+  # - -1.0788859723752324
+  # - -0.04944265090175737
+  # - -1.6106398798635722
+  # - 0.09799237717952423
+
+  intermediate:
+  - -0.4574479846496029
+  - 0.4460126372449114
+  - -3.0426903075553025
+  - -1.691527006388113
+  - 1.3278726258539018
+  - -1.6106308251158659
+  - -0.5939275336651111
 
   # dist_from_table: 0.359
   # - -0.0011994877549712513 
@@ -114,14 +137,7 @@ joint_positions:
   - -0.9145407036097888
   - -2.854664210376874
 
-  intermediate:
-    - 1.1344592201063521
-    - 0.2624653944535078
-    - 3.141584131474305
-    - -2.269327768072249
-    - -2.1837920938239108e-05
-    - 0.9598970667139555
-    - 1.5707984573237685
+
 
   # - 0.17452548499313755
   # - 0.26193274559073515

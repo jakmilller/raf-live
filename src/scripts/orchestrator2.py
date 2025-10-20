@@ -88,7 +88,7 @@ class Orchestrator(Node):
 
     def position_vector_callback(self, msg):
         """Store latest position vector"""
-        self.latest_position_vector = msg
+        self.latest_position_vector = msg   
     
     def grip_value_callback(self, msg):
         """Store latest grip value"""
@@ -100,12 +100,13 @@ class Orchestrator(Node):
 
     def food_item_callback(self, msg):
         """Adjust close values (how tightly to close gripper) based on food item"""
-        if msg.data == "carrot":
-            self.grip_close_amount = 0.075
+        if msg.data == "grape":
+            self.grip_close_amount = 0.056
             self.get_logger().info("Adjusting close value!")
-        elif msg.data == "chicken nugget" or msg.data == "cut grilled chicken" or msg.data == "cut grilled cheese" or msg.data == "garlic bread":
-            self.grip_close_amount = 0.065
+        elif msg.data == "broccoli":
+            self.grip_close_amount = 0.09
             self.get_logger().info("Adjusting close value!")
+
         else:
             self.grip_close_amount = self.config['feeding']['grip_close']
 
@@ -175,19 +176,24 @@ class Orchestrator(Node):
         """Wait for the food detection node to beign tracking the food item (it takes time for GT/DINO-X to return)"""
         self.get_logger().info("Waiting for food detection node to begin tracking...")
         start_time = time.time()
-        
+
         while rclpy.ok():
+            # Check for tracking lost immediately
+            if self.tracking_lost:
+                self.get_logger().warn("Detection failed - tracking lost before tracking began")
+                return False
+
             if time.time() - start_time > timeout:
                 self.get_logger().error(f"Timeout waiting for food detection node to begin tracking after {timeout}s")
                 return False
-            
+
             if self.food_tracking:
                 self.get_logger().info("Food detection node has begun tracking!")
                 return True
-            
+
             await asyncio.sleep(0.1)
             rclpy.spin_once(self, timeout_sec=0)
-        
+
         return False
     
     async def get_current_pose(self):
@@ -287,7 +293,8 @@ class Orchestrator(Node):
                 return False
             
             # Close gripper more
-            close_value = min(1.0, self.latest_grip_value + self.grip_close_amount)
+            close_value = min(0.8, self.latest_grip_value + self.grip_close_amount)
+            
             self.get_logger().info(f"Closing gripper from {self.latest_grip_value:.3f} to {close_value:.3f}")
             if not await self.robot_controller.set_gripper(close_value):
                 self.get_logger().error("Failed to close gripper!")
@@ -319,6 +326,12 @@ class Orchestrator(Node):
                     break
 
             self.get_logger().info(f"Pickup attempt {attempt + 1} of {max_retries + 1}...")
+
+            # Set gains for food servoing
+            self.get_logger().info("2. Setting food servoing gains...")
+            food_gains = Vector3(x=0.65, y=0.65, z=0.65)
+            self.twist_gains_pub.publish(food_gains)
+            await asyncio.sleep(0.3)
 
             # Turn on visual servoing
             self.servoing_on_pub.publish(Bool(data=True))
@@ -373,7 +386,7 @@ class Orchestrator(Node):
             
             # Set gains for face servoing
             self.get_logger().info("2. Setting face servoing gains...")
-            face_gains = Vector3(x=0.35, y=0.35, z=0.35)
+            face_gains = Vector3(x=0.45, y=0.45, z=0.45)
             self.twist_gains_pub.publish(face_gains)
             await asyncio.sleep(0.5)
             

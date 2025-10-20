@@ -153,7 +153,7 @@ def generate_launch_description():
         robot_state_publisher,
         realsense_transform,
         controller_node,
-        # perception_node,
-        rviz_node,  # remove for no rviz
         realsense_launch
+        # perception_node,
+  # remove for no rviz
     ])

@@ -14,6 +14,7 @@ class GraspAnalyzer:
             node: ROS node instance for logging and camera info (optional)
         """
         self.node = node
+        self.angle_history = []  # Initialize angle history for moving average
         self.food_height_calculated = False
         self.current_food_height = 0.0
     
@@ -78,6 +79,7 @@ class GraspAnalyzer:
         """Reset food height calculation for new feeding cycle"""
         self.food_height_calculated = False
         self.current_food_height = 0.0
+        self.angle_history = []
         if self.node:
             self.node.get_logger().info("Reset food height calculation for new cycle")
     
@@ -251,7 +253,7 @@ class GraspAnalyzer:
 
             if not success1 or not success2 or rs_width_p1 is None or rs_width_p2 is None:
                 # if self.node:
-                self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
+                # self.node.get_logger().warn("Could not convert width points to RealSense coordinates")
                 grip_val = None
             else: 
                 # get true distances of points from each other (ignore depth for accuracy)
@@ -285,6 +287,10 @@ class GraspAnalyzer:
     
     def _get_food_angle_pca(self, mask):
         """Calculate food angle using PCA with circularity check"""
+
+        # blur image to make less sensistive to noise
+        mask = self.smooth_mask(mask, kernel_size=9, sigma=2.0)
+
         ys, xs = np.where(mask > 0)
         points = np.column_stack((xs, ys))
 
@@ -307,7 +313,7 @@ class GraspAnalyzer:
         # Check if object is elongated enough to have a meaningful angle
         # Ratio > threshold means object is elongated, < threshold means circular
         eigenvalue_ratio = eigvals[0] / eigvals[1] if eigvals[1] > 0 else float('inf')
-        elongation_threshold = 1.3
+        elongation_threshold = 1.1
         
         if eigenvalue_ratio < elongation_threshold:
             if self.node:
@@ -325,10 +331,19 @@ class GraspAnalyzer:
         # make vertical 0 degrees
         angle -= 90
 
+        # Smooth angle using moving average
+        self.angle_history.append(angle)
+        if len(self.angle_history) > 10:
+            self.angle_history.pop(0)
+        angle = np.mean(self.angle_history)
+
         # if self.node:
         #     self.node.get_logger().info(f"Food angle: {angle:.1f}° (elongation ratio: {eigenvalue_ratio:.2f})")
 
         return angle
+    
+    def smooth_mask(self, mask, kernel_size=5, sigma=1.0):
+        return cv2.GaussianBlur(mask, (kernel_size, kernel_size), sigma)
     
     def _pixel_to_rs_frame(self, pixel_x, pixel_y, depth_image):
         """Convert pixel coordinates to 3D coordinates relative to RealSense camera"""

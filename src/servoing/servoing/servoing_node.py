@@ -14,10 +14,10 @@ class ServoingNode(Node):
         # State variables
         self.position_vector = Vector3()
         self.food_angle = None
-        self.kp_linear = Vector3(x=0.65, y=0.65, z=0.65)  # default proportional gains for linear (x,y,z) movement
+        self.kp_linear = Vector3(x=0.4, y=0.4, z=0.4)  # default proportional gains for linear (x,y,z) movement
         self.kd_linear = Vector3(x=0.1, y=0.1, z=0.1)  # default derivative gains for linear (x,y,z) movement
-        self.kp_orientation = 0.01  # default proportional gain for orientation (yaw)
-        self.kd_orientation = 0.01  # default derivative gain for orientation (yaw)
+        self.kp_orientation = 0.008  # default proportional gain for orientation (yaw)
+        self.kd_orientation = 0.00  # default derivative gain for orientation (yaw)
         self.servoing_on = False
         self.last_position_vector = None
         self.last_food_angle = None
@@ -53,14 +53,14 @@ class ServoingNode(Node):
         self.position_vector = msg
         
         # Optional: log magnitude periodically for debugging
-        if hasattr(self, '_log_counter'):
-            self._log_counter += 1
-        else:
-            self._log_counter = 0
+        # if hasattr(self, '_log_counter'):
+        #     self._log_counter += 1
+        # else:
+        #     self._log_counter = 0
         
-        # Log every 50 messages (~1 second at 50Hz)
-        if self._log_counter % 50 == 0:
-            magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
+        # # Log every 50 messages (~1 second at 50Hz)
+        # if self._log_counter % 50 == 0:
+        #     magnitude = np.linalg.norm([msg.x, msg.y, msg.z])
             # self.get_logger().info(f"Position vector magnitude: {magnitude:.3f}")
     
     def food_angle_callback(self, msg):
@@ -69,7 +69,7 @@ class ServoingNode(Node):
     
     def kp_linear_callback(self, msg):
         """Update proportional linear gains"""
-        self.kp_linear_gains = msg
+        self.kp_linear = msg
         self.get_logger().info(f"Updated gains: x={msg.x}, y={msg.y}, z={msg.z}")
     
     def servoing_on_callback(self, msg):

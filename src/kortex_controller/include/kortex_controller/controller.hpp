@@ -142,7 +142,7 @@ private:
     std::vector<double> mNewForceThreshold;
     
     int mConsecutiveForceExceeds{0};
-    static constexpr double TOTAL_FORCE_THRESHOLD = 13.0;
+    static constexpr double TOTAL_FORCE_THRESHOLD = 15.0;
     static constexpr int CONSECUTIVE_LIMIT = 10;
 
     bool mWatchdogActive;
