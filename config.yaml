@@ -8,6 +8,11 @@ feeding:
   # options: gemini or dinox (dinox uses ChatGPT)
   detection_model: dinox
 
+  # Available food items for detection
+  available_items:
+    - sweet potato fry
+    - celery
+
   # for moving to the mouth via visual servoing
   face_detection:
     enabled: True
@@ -29,7 +34,7 @@ feeding:
   
   # depth from overlook to table (m)
   #dist_from_table: 0.342 for lab
-  dist_from_table: 0.345 #last update: eric table trial
+  dist_from_table: 0.327 #last update: eric table trial
   # how far the tips of gripper should be from food after servoing
   dist_from_food: 0.01
   robotiq_offset: 0.0285
@@ -67,13 +72,13 @@ feeding:
 # Joint positions remain the same...
 joint_positions:
   overlook:
-  - 0.02454584394098834
-  - 0.33725213438230167
-  - -3.040529684962921
-  - -1.0230836927903662
-  - -0.042024682001450486
-  - -1.7426410571900037
-  - 0.09738833895478063
+  - -0.01298663873966266
+  - 0.29886639569433554
+  - -3.047949518075991
+  - -1.1299616736574265
+  - -0.03380669950968329
+  - -1.6738979452362237
+  - 0.05766644241365134
 
   # - 0.023849439799500226
   # - 0.43929241655020546

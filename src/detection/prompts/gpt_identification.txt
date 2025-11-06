@@ -1,5 +1,5 @@
 Objective: To determine the items on the plate.
-Available items: cucumber, sweet potato fry, chocolate bite
+Available items: {AVAILABLE_ITEMS}
 
 
 You have been given an image of a plate. From the available items, what items are present, as a comma-separated list? After each item, output the number of bites it should take to eat that food item. This will always be either 1 or 2 bites.

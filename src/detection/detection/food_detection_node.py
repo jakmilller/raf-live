@@ -109,14 +109,21 @@ class FoodDetectionNode(Node):
         self.get_logger().info('Food Detection Node initialized')
 
     def _load_prompt(self):
-        """Load detection prompt"""
+        """Load detection prompt and inject available items"""
         if self.detection_model == 'dinox':
             prompt_file = os.path.expanduser('~/raf-live/src/detection/prompts/gpt_identification.txt')
         else:
             prompt_file = os.path.expanduser('~/raf-live/src/detection/prompts/gemini_identification.txt')
         try:
             with open(prompt_file, 'r') as f:
-                return f.read().strip()
+                prompt = f.read().strip()
+
+            # Inject available items from config
+            available_items = self.config['feeding']['available_items']
+            items_str = ', '.join(available_items)
+            prompt = prompt.replace('{AVAILABLE_ITEMS}', items_str)
+
+            return prompt
         except:
             self.get_logger().error(f"Prompt file not found: {prompt_file}, are you in the right directory?")
 

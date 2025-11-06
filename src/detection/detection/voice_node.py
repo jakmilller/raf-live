@@ -129,10 +129,21 @@ class AudioProcessor:
                 raise
 
     async def run(self, client):
+        # Load config to get available items
+        config_path = os.path.expanduser('~/raf-live/config.yaml')
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+
+        available_items = config['feeding']['available_items']
+        items_str = ', '.join(available_items)
+
+        # Load and inject items into prompt
         prompt_path = os.path.expanduser('~/raf-live/src/detection/prompts/gemini_identification.txt')
         with open(prompt_path, 'r') as file:
             prompt = file.read()
-            
+
+        prompt = prompt.replace('{AVAILABLE_ITEMS}', items_str)
+
         CONFIG = {
             "system_instruction": types.Content(parts=[types.Part(text=prompt)]), "response_modalities": ["TEXT"],
         }
